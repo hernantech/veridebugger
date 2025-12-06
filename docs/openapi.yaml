@@ -1,0 +1,1088 @@
+openapi: 3.0.3
+info:
+  title: VeriDebugger API
+  description: |
+    AI-powered Verilog verification backend with agentic workflows.
+
+    ## Overview
+
+    This API provides endpoints for:
+    - **Optimization**: Debug and optimize Verilog designs with LLM-guided fixes
+    - **Test Generation**: Automatically generate testbenches from design code
+    - **C-to-Verilog Conversion**: Convert C code to Verilog using BAMBU HLS
+    - **Debugging**: Run simulations with VCD waveform capture for analysis
+
+    ## Workflow Patterns
+
+    ### Async (Streaming) Pattern
+    For long-running operations, use the async pattern:
+    1. POST to `/start` or `/testgen/start` to get a `run_id`
+    2. Connect via WebSocket to `/stream/{run_id}` or `/testgen/stream/{run_id}`
+    3. Receive real-time updates as JSON messages
+    4. Optionally poll `/status/{run_id}` for current state
+
+    ### Sync (Blocking) Pattern
+    For simpler integrations, use blocking endpoints:
+    - POST `/optimize` - blocks until complete
+    - POST `/testgen/full` - blocks until complete
+
+    ## WebSocket Message Format
+
+    All WebSocket messages are JSON objects with this structure:
+    ```json
+    {
+      "phase": "compile|simulate|debug|synthesize|optimize|testgen|done",
+      "action": "string describing current action",
+      "reasoning": "LLM explanation of what it's doing",
+      "code": "current Verilog code (may be modified)",
+      "result": { ... },  // tool output (compile errors, sim results, etc)
+      "lut_history": [45, 42, 38],  // LUT counts over iterations
+      "iteration": 3,
+      "done": false
+    }
+    ```
+
+  version: 1.0.0
+  contact:
+    name: VeriDebugger
+    url: https://github.com/hernantech/veridebugger
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: Health
+    description: Service health checks
+  - name: Optimization
+    description: |
+      Debug and optimize Verilog designs. The agent iteratively:
+      1. Compiles the design (iverilog)
+      2. Runs simulation with testbench
+      3. Analyzes failures using VCD waveforms
+      4. Synthesizes to count LUTs (yosys)
+      5. Applies LLM-suggested fixes
+      6. Repeats until tests pass or max iterations reached
+  - name: Test Generation
+    description: |
+      Automatically generate testbenches from Verilog designs.
+      The agent:
+      1. Extracts module interface (ports, clock, reset, FSM)
+      2. Generates edge case test values
+      3. Uses LLM to create comprehensive testbench
+      4. Runs the full optimization loop with generated tests
+  - name: Conversion
+    description: |
+      Convert C code to Verilog using BAMBU High-Level Synthesis.
+      Validates C syntax with gcc before running HLS.
+  - name: Debug
+    description: |
+      Low-level debugging tools for VCD waveform analysis.
+      Use these for custom debugging workflows.
+
+paths:
+  # ==================== HEALTH ====================
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: |
+        Returns service health status.
+        Use this to verify the backend is running before making other calls.
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                    example: ok
+
+  # ==================== OPTIMIZATION ====================
+  /start:
+    post:
+      tags: [Optimization]
+      summary: Start async optimization run
+      description: |
+        Initiates an optimization run and returns a run_id.
+
+        **Next step**: Connect to WebSocket at `/stream/{run_id}` to receive
+        real-time updates as the agent works.
+
+        The agent will:
+        1. Compile the design
+        2. Run simulation with your testbench
+        3. If simulation fails, analyze VCD and suggest fixes
+        4. If simulation passes, synthesize and optimize for LUT reduction
+        5. Iterate until done or max_iterations reached
+      operationId: startOptimization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OptimizeRequest'
+            example:
+              design_code: |
+                module adder(
+                    input [7:0] a, b,
+                    output [8:0] sum
+                );
+                    assign sum = a + b;
+                endmodule
+              testbench_code: |
+                module tb;
+                    reg [7:0] a, b;
+                    wire [8:0] sum;
+                    adder dut(.a(a), .b(b), .sum(sum));
+                    initial begin
+                        a = 10; b = 20;
+                        #10;
+                        if (sum == 30) $display("PASS");
+                        else $display("FAIL");
+                        $finish;
+                    end
+                endmodule
+              max_iterations: 10
+      responses:
+        '200':
+          description: Run started successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartResponse'
+
+  /stream/{run_id}:
+    get:
+      tags: [Optimization]
+      summary: WebSocket stream for optimization progress
+      description: |
+        **WebSocket endpoint** - Connect using a WebSocket client.
+
+        Streams real-time updates as the optimization agent works.
+        Each message is a JSON object describing the current step.
+
+        **Connection flow**:
+        ```javascript
+        const ws = new WebSocket('ws://localhost:8080/stream/abc123');
+        ws.onmessage = (event) => {
+          const step = JSON.parse(event.data);
+          console.log(`[${step.phase}] ${step.reasoning}`);
+          if (step.done) {
+            console.log('Final code:', step.code);
+            ws.close();
+          }
+        };
+        ```
+
+        **Message phases**:
+        - `compile`: Compiling Verilog with iverilog
+        - `simulate`: Running simulation with testbench
+        - `debug`: Analyzing VCD waveform for failure cause
+        - `synthesize`: Running yosys synthesis for LUT count
+        - `fix`: LLM suggesting code changes
+        - `optimize`: Attempting to reduce LUT usage
+        - `done`: Agent finished (check `error` field for failures)
+      operationId: streamOptimization
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Run ID from /start response
+          example: abc123
+      responses:
+        '101':
+          description: WebSocket connection established
+        '404':
+          description: Run not found
+
+  /status/{run_id}:
+    get:
+      tags: [Optimization]
+      summary: Get run status
+      description: |
+        Returns the current status and history of an optimization run.
+        Use this to check progress without maintaining a WebSocket connection.
+      operationId: getStatus
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Run ID from /start response
+      responses:
+        '200':
+          description: Run status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /optimize:
+    post:
+      tags: [Optimization]
+      summary: Run optimization synchronously (blocking)
+      description: |
+        Runs the full optimization loop and blocks until complete.
+
+        **Use this when**:
+        - You don't need real-time progress updates
+        - Your client doesn't support WebSockets
+        - You're making a simple one-off request
+
+        **Prefer `/start` + WebSocket when**:
+        - You want to show progress to users
+        - The operation might take a long time
+        - You need to handle disconnections gracefully
+
+        Returns the final optimized code and LUT history.
+      operationId: optimizeSync
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OptimizeRequest'
+      responses:
+        '200':
+          description: Optimization complete
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OptimizeResponse'
+        '500':
+          description: Agent error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== TEST GENERATION ====================
+  /testgen/interface:
+    post:
+      tags: [Test Generation]
+      summary: Extract module interface
+      description: |
+        Parses Verilog code and extracts the module interface.
+
+        Returns structured information about:
+        - Module name
+        - All ports (name, direction, width)
+        - Parameters
+        - Clock/reset detection (by naming convention)
+        - FSM detection (if present)
+
+        **Use this to**:
+        - Preview what the testgen will work with
+        - Validate your Verilog parses correctly
+        - Get port information for manual testbench writing
+      operationId: extractInterface
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DesignOnlyRequest'
+            example:
+              design_code: |
+                module counter(
+                    input wire clk,
+                    input wire rst,
+                    input wire [7:0] max_val,
+                    output reg [7:0] count,
+                    output reg done
+                );
+                endmodule
+      responses:
+        '200':
+          description: Interface extracted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InterfaceResponse'
+              example:
+                name: counter
+                ports:
+                  - name: clk
+                    direction: input
+                    width: 1
+                    is_signed: false
+                    is_array: false
+                  - name: rst
+                    direction: input
+                    width: 1
+                    is_signed: false
+                    is_array: false
+                  - name: max_val
+                    direction: input
+                    width: 8
+                    is_signed: false
+                    is_array: false
+                  - name: count
+                    direction: output
+                    width: 8
+                    is_signed: false
+                    is_array: false
+                  - name: done
+                    direction: output
+                    width: 1
+                    is_signed: false
+                    is_array: false
+                parameters: []
+                has_clock: true
+                has_reset: true
+                clock_name: clk
+                reset_name: rst
+                fsm: null
+        '400':
+          description: Could not parse module
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /testgen/generate:
+    post:
+      tags: [Test Generation]
+      summary: Generate testbench
+      description: |
+        Generates a complete testbench for the given Verilog design using LLM.
+
+        The generated testbench includes:
+        - Clock generation (if module has clock input)
+        - Reset sequence (active-high or active-low based on port name)
+        - Edge case tests for all input ports
+        - Structured output format ([PASS]/[FAIL]/[DONE])
+        - VCD dump commands for waveform capture
+
+        **Note**: This only generates the testbench - it doesn't run it.
+        Use `/testgen/full` to generate AND run verification.
+      operationId: generateTestbench
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DesignOnlyRequest'
+      responses:
+        '200':
+          description: Testbench generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestbenchResponse'
+              example:
+                testbench_code: |
+                  `timescale 1ns/1ps
+                  module counter_tb;
+                      reg clk, rst;
+                      reg [7:0] max_val;
+                      wire [7:0] count;
+                      wire done;
+                      // ... rest of testbench
+                  endmodule
+                module_name: counter
+                generated_with: llm
+        '400':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /testgen/start:
+    post:
+      tags: [Test Generation]
+      summary: Start async testgen run
+      description: |
+        Initiates autonomous test generation and verification.
+
+        **Full workflow**:
+        1. Extract module interface
+        2. Generate comprehensive testbench using LLM
+        3. Compile design + generated testbench
+        4. Run simulation
+        5. If tests fail, debug with VCD analysis and fix
+        6. If tests pass, synthesize and report LUT count
+        7. Optionally optimize for better LUT usage
+
+        Connect to WebSocket at `/testgen/stream/{run_id}` for updates.
+      operationId: startTestgen
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestGenRequest'
+            example:
+              design_code: |
+                module fibonacci(
+                    input wire clk,
+                    input wire rst,
+                    input wire next,
+                    output reg [15:0] fib
+                );
+                    reg [15:0] prev;
+                    always @(posedge clk or posedge rst)
+                        if (rst) begin fib <= 1; prev <= 0; end
+                        else if (next) begin fib <= fib + prev; prev <= fib; end
+                endmodule
+              max_iterations: 5
+      responses:
+        '200':
+          description: Testgen run started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartResponse'
+
+  /testgen/stream/{run_id}:
+    get:
+      tags: [Test Generation]
+      summary: WebSocket stream for testgen progress
+      description: |
+        **WebSocket endpoint** - Streams testgen progress.
+
+        Additional phases for testgen:
+        - `testgen/extract_interface`: Parsing module
+        - `testgen/generate_testbench`: LLM creating tests
+        - `testgen/testbench_ready`: Testbench complete
+
+        After testbench generation, normal optimization phases follow.
+
+        Messages include extra fields:
+        - `testbench_code`: The generated testbench (when ready)
+        - `interface`: Extracted module interface
+      operationId: streamTestgen
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '101':
+          description: WebSocket connection established
+
+  /testgen/full:
+    post:
+      tags: [Test Generation]
+      summary: Run testgen synchronously (blocking)
+      description: |
+        Runs the full test generation and verification loop, blocking until complete.
+
+        Returns:
+        - Generated testbench code
+        - Final (possibly optimized) design code
+        - Module interface information
+        - LUT history across iterations
+        - All reasoning steps from the agent
+      operationId: testgenSync
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestGenRequest'
+      responses:
+        '200':
+          description: Testgen complete
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestgenFullResponse'
+        '500':
+          description: Agent error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== C TO VERILOG CONVERSION ====================
+  /convert:
+    post:
+      tags: [Conversion]
+      summary: Convert C code to Verilog
+      description: |
+        Converts C code to synthesizable Verilog using BAMBU High-Level Synthesis.
+
+        **Process**:
+        1. Validates C syntax with gcc (fail-fast)
+        2. Runs BAMBU HLS to generate Verilog
+        3. Returns the generated Verilog code
+
+        **Requirements**:
+        - BAMBU must be installed on the server
+        - C code must be HLS-compatible (no dynamic memory, etc.)
+
+        **On failure**: Returns detailed error messages. Fix the C code and retry.
+        The system does NOT auto-fix C code - that's the user's responsibility.
+      operationId: convertCToVerilog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConvertRequest'
+            example:
+              c_code: |
+                int add(int a, int b) {
+                    return a + b;
+                }
+              top_function: add
+      responses:
+        '200':
+          description: Conversion successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConvertResponse'
+              example:
+                success: true
+                verilog_code: |
+                  // Generated by BAMBU HLS
+                  module add(
+                      input [31:0] a,
+                      input [31:0] b,
+                      output [31:0] return_port
+                  );
+                      assign return_port = a + b;
+                  endmodule
+                message: C code successfully converted to Verilog
+        '400':
+          description: Conversion failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConvertErrorResponse'
+              example:
+                detail:
+                  success: false
+                  errors:
+                    - "design.c:3:5: error: expected ';' before 'return'"
+                  raw_output: "gcc output here..."
+
+  /convert/check:
+    post:
+      tags: [Conversion]
+      summary: Check C syntax only
+      description: |
+        Validates C code syntax without running full HLS conversion.
+
+        Use this to:
+        - Quickly check if C code is syntactically valid
+        - Get error messages before attempting slow HLS conversion
+        - Validate user input in real-time
+      operationId: checkCSyntax
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConvertRequest'
+      responses:
+        '200':
+          description: Syntax check result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyntaxCheckResponse'
+              example:
+                success: true
+                errors: []
+                raw_output: ""
+
+  # ==================== DEBUG ====================
+  /debug/vcd:
+    post:
+      tags: [Debug]
+      summary: Run simulation with VCD capture
+      description: |
+        Runs simulation and captures VCD waveform file.
+
+        The VCD file can be used for:
+        - Waveform visualization in GTKWave or similar
+        - Signal value inspection at specific times
+        - Failure root-cause analysis
+
+        If the testbench doesn't include `$dumpfile`/`$dumpvars`,
+        they are automatically injected.
+      operationId: runWithVcd
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OptimizeRequest'
+      responses:
+        '200':
+          description: Simulation complete
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VcdSimResponse'
+              example:
+                passed: true
+                failures: []
+                raw_output: "PASS\n"
+                vcd_path: "/tmp/fpga-agent/dump.vcd"
+
+  /debug/analyze:
+    post:
+      tags: [Debug]
+      summary: Analyze VCD file
+      description: |
+        Analyzes a VCD waveform file and returns signal information.
+
+        Returns:
+        - List of all signals with their widths
+        - Transition counts per signal
+        - Simulation time range
+
+        **Note**: The VCD file must exist on the server.
+        Use `/debug/vcd` first to generate one.
+      operationId: analyzeVcd
+      parameters:
+        - name: vcd_path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Path to VCD file on server
+          example: /tmp/fpga-agent/dump.vcd
+      responses:
+        '200':
+          description: VCD analysis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VcdAnalysisResponse'
+              example:
+                timescale: "1ns"
+                end_time: 1000
+                signal_count: 5
+                signals:
+                  - id: "!"
+                    name: clk
+                    path: tb.clk
+                    width: 1
+                    transitions: 100
+                  - id: "\""
+                    name: data
+                    path: tb.dut.data
+                    width: 8
+                    transitions: 25
+        '400':
+          description: VCD file not found or invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== LEGACY ====================
+  /run:
+    post:
+      tags: [Optimization]
+      summary: Legacy endpoint
+      deprecated: true
+      description: |
+        **Deprecated** - Use `/start` instead.
+
+        This endpoint exists for backwards compatibility and redirects to `/start`.
+      operationId: legacyRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OptimizeRequest'
+      responses:
+        '200':
+          description: Redirects to /start
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartResponse'
+
+components:
+  schemas:
+    # ==================== REQUEST SCHEMAS ====================
+    OptimizeRequest:
+      type: object
+      required:
+        - design_code
+        - testbench_code
+      properties:
+        design_code:
+          type: string
+          description: Verilog design code to optimize
+          example: "module adder(input [7:0] a, b, output [8:0] sum); assign sum = a + b; endmodule"
+        testbench_code:
+          type: string
+          description: Verilog testbench code
+          example: "module tb; ... endmodule"
+        max_iterations:
+          type: integer
+          default: 10
+          minimum: 1
+          maximum: 50
+          description: Maximum fix/optimize iterations before stopping
+
+    TestGenRequest:
+      type: object
+      required:
+        - design_code
+      properties:
+        design_code:
+          type: string
+          description: Verilog design code (testbench will be generated)
+        max_iterations:
+          type: integer
+          default: 5
+          minimum: 1
+          maximum: 20
+          description: Maximum iterations for the verification loop
+
+    DesignOnlyRequest:
+      type: object
+      required:
+        - design_code
+      properties:
+        design_code:
+          type: string
+          description: Verilog design code
+
+    ConvertRequest:
+      type: object
+      required:
+        - c_code
+      properties:
+        c_code:
+          type: string
+          description: C code to convert to Verilog
+        top_function:
+          type: string
+          default: main
+          description: Name of the top-level function to synthesize
+
+    # ==================== RESPONSE SCHEMAS ====================
+    StartResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+          description: Unique identifier for this run
+          example: abc123
+        message:
+          type: string
+          description: Instructions for next step
+          example: "Connect to WebSocket at /stream/abc123"
+
+    StatusResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, error, disconnected]
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentStep'
+        latest:
+          $ref: '#/components/schemas/AgentStep'
+
+    OptimizeResponse:
+      type: object
+      properties:
+        final_code:
+          type: string
+          description: Final optimized Verilog code
+        lut_history:
+          type: array
+          items:
+            type: integer
+          description: LUT counts at each synthesis step
+          example: [45, 42, 38]
+        iterations:
+          type: integer
+          description: Number of iterations performed
+        reasoning:
+          type: array
+          items:
+            type: string
+          description: LLM reasoning at each step
+
+    InterfaceResponse:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Module name
+        ports:
+          type: array
+          items:
+            $ref: '#/components/schemas/Port'
+        parameters:
+          type: array
+          items:
+            $ref: '#/components/schemas/Parameter'
+        has_clock:
+          type: boolean
+          description: Whether module has a clock input (detected by name)
+        has_reset:
+          type: boolean
+          description: Whether module has a reset input (detected by name)
+        clock_name:
+          type: string
+          nullable: true
+          description: Name of clock signal if detected
+        reset_name:
+          type: string
+          nullable: true
+          description: Name of reset signal if detected
+        fsm:
+          $ref: '#/components/schemas/FSMInfo'
+
+    TestbenchResponse:
+      type: object
+      properties:
+        testbench_code:
+          type: string
+          description: Generated Verilog testbench
+        module_name:
+          type: string
+          description: Name of the module under test
+        generated_with:
+          type: string
+          enum: [llm, skeleton]
+          description: Whether LLM or fallback skeleton was used
+
+    TestgenFullResponse:
+      type: object
+      properties:
+        final_code:
+          type: string
+          description: Final design code (may be modified)
+        generated_testbench:
+          type: string
+          description: The auto-generated testbench
+        interface:
+          $ref: '#/components/schemas/InterfaceResponse'
+        lut_history:
+          type: array
+          items:
+            type: integer
+        iterations:
+          type: integer
+        reasoning:
+          type: array
+          items:
+            type: string
+
+    ConvertResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        verilog_code:
+          type: string
+          description: Generated Verilog code
+        message:
+          type: string
+          example: "C code successfully converted to Verilog"
+
+    ConvertErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: object
+          properties:
+            success:
+              type: boolean
+              example: false
+            errors:
+              type: array
+              items:
+                type: string
+            raw_output:
+              type: string
+
+    SyntaxCheckResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        errors:
+          type: array
+          items:
+            type: string
+        raw_output:
+          type: string
+
+    VcdSimResponse:
+      type: object
+      properties:
+        passed:
+          type: boolean
+          description: Whether all tests passed
+        failures:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimFailure'
+        raw_output:
+          type: string
+          description: Raw simulation output
+        vcd_path:
+          type: string
+          nullable: true
+          description: Path to generated VCD file on server
+
+    VcdAnalysisResponse:
+      type: object
+      properties:
+        timescale:
+          type: string
+          example: "1ns"
+        end_time:
+          type: integer
+          description: Simulation end time in timescale units
+        signal_count:
+          type: integer
+        signals:
+          type: array
+          items:
+            $ref: '#/components/schemas/SignalInfo'
+
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+          description: Error message
+
+    # ==================== COMMON SCHEMAS ====================
+    AgentStep:
+      type: object
+      description: A single step in the agent workflow
+      properties:
+        phase:
+          type: string
+          enum: [compile, simulate, debug, synthesize, optimize, testgen, done]
+        action:
+          type: string
+          description: Specific action being performed
+        reasoning:
+          type: string
+          description: LLM explanation of current action
+        code:
+          type: string
+          description: Current Verilog code
+        result:
+          type: object
+          description: Tool output (varies by phase)
+        lut_history:
+          type: array
+          items:
+            type: integer
+        iteration:
+          type: integer
+        vcd_path:
+          type: string
+          nullable: true
+        debug_trace:
+          type: array
+          items:
+            type: object
+          nullable: true
+        done:
+          type: boolean
+
+    Port:
+      type: object
+      properties:
+        name:
+          type: string
+        direction:
+          type: string
+          enum: [input, output, inout]
+        width:
+          type: integer
+          minimum: 1
+        is_signed:
+          type: boolean
+        is_array:
+          type: boolean
+
+    Parameter:
+      type: object
+      properties:
+        name:
+          type: string
+        default:
+          type: string
+          nullable: true
+
+    FSMInfo:
+      type: object
+      nullable: true
+      properties:
+        state_reg:
+          type: string
+          description: Name of state register
+        states:
+          type: array
+          items:
+            type: string
+          description: Detected state names
+        state_width:
+          type: integer
+
+    SimFailure:
+      type: object
+      properties:
+        signal:
+          type: string
+        expected:
+          type: string
+        actual:
+          type: string
+        cycle:
+          type: integer
+          nullable: true
+        time_ns:
+          type: integer
+          nullable: true
+
+    SignalInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          description: VCD identifier character
+        name:
+          type: string
+        path:
+          type: string
+          description: Full hierarchical path
+        width:
+          type: integer
+        transitions:
+          type: integer
+          description: Number of value changes
