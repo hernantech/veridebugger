@@ -1,10 +1,12 @@
 """
-Tools for HDL compilation, simulation, and synthesis.
+Tools for HDL compilation, simulation, synthesis, debugging, and test generation.
 """
 
 import subprocess
 import tempfile
+import re
 from pathlib import Path
+from dataclasses import dataclass
 from parsers import (
     parse_iverilog_compile,
     parse_vvp_simulation,
@@ -18,6 +20,12 @@ from parsers import (
 
 WORK_DIR = Path(tempfile.gettempdir()) / "fpga-agent"
 WORK_DIR.mkdir(exist_ok=True)
+
+
+@dataclass
+class SimWithVCDResult:
+    sim_result: SimResult
+    vcd_path: Path | None
 
 
 def compile_verilog(code: str, filename: str = "design.v") -> CompileResult:
@@ -127,14 +135,158 @@ def edit_code(
     return '\n'.join(lines)
 
 
+def simulate_with_vcd(design_code: str, testbench_code: str) -> SimWithVCDResult:
+    """Run simulation with VCD waveform capture."""
+    design_path = WORK_DIR / "design.v"
+    tb_path = WORK_DIR / "testbench.v"
+    sim_out = WORK_DIR / "sim.out"
+    vcd_path = WORK_DIR / "dump.vcd"
+
+    # Inject VCD commands if not present
+    if "$dumpfile" not in testbench_code:
+        # Find 'initial begin' and inject after it
+        inject_code = '\n        $dumpfile("dump.vcd");\n        $dumpvars(0);'
+        testbench_code = re.sub(
+            r'(initial\s+begin)',
+            r'\1' + inject_code,
+            testbench_code,
+            count=1
+        )
+
+    design_path.write_text(design_code)
+    tb_path.write_text(testbench_code)
+
+    compile_result = subprocess.run(
+        ["iverilog", "-g2012", "-Wall", "-o", str(sim_out), str(design_path), str(tb_path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=str(WORK_DIR)
+    )
+
+    if compile_result.returncode != 0:
+        output = compile_result.stdout + compile_result.stderr
+        return SimWithVCDResult(
+            sim_result=SimResult(
+                passed=False,
+                failures=[],
+                raw_output=f"Compilation failed:\n{output}"
+            ),
+            vcd_path=None
+        )
+
+    sim_result = subprocess.run(
+        ["vvp", str(sim_out)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(WORK_DIR)
+    )
+
+    output = sim_result.stdout + sim_result.stderr
+    parsed = parse_vvp_simulation(output, sim_result.returncode)
+
+    return SimWithVCDResult(
+        sim_result=parsed,
+        vcd_path=vcd_path if vcd_path.exists() else None
+    )
+
+
+def extract_module_interface(design_code: str) -> dict:
+    """Extract module interface from Verilog code."""
+    from module_analyzer import extract_module_interface as _extract, to_dict
+
+    interface = _extract(design_code)
+    if interface:
+        return to_dict(interface)
+    return {"error": "Could not parse module interface"}
+
+
+def generate_testbench_for_design(design_code: str, use_llm: bool = True) -> dict:
+    """Generate a testbench for the given design."""
+    from module_analyzer import extract_module_interface as _extract
+    from testgen import generate_testbench, generate_testbench_skeleton
+
+    interface = _extract(design_code)
+    if not interface:
+        return {"error": "Could not parse module interface"}
+
+    try:
+        if use_llm:
+            testbench = generate_testbench(interface)
+        else:
+            testbench = generate_testbench_skeleton(interface)
+
+        return {
+            "testbench_code": testbench,
+            "module_name": interface.name,
+            "generated_with": "llm" if use_llm else "skeleton"
+        }
+    except Exception as e:
+        # Fall back to skeleton on LLM failure
+        testbench = generate_testbench_skeleton(interface)
+        return {
+            "testbench_code": testbench,
+            "module_name": interface.name,
+            "generated_with": "skeleton",
+            "llm_error": str(e)
+        }
+
+
+def analyze_vcd(vcd_path: str) -> dict:
+    """Analyze VCD file and return summary."""
+    from vcd_parser import parse_vcd, get_waveform_summary
+
+    try:
+        waveform = parse_vcd(vcd_path)
+        return get_waveform_summary(waveform)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def trace_failure_in_vcd(vcd_path: str, failure_signal: str, failure_time: int) -> dict:
+    """Trace back from a failure to find causal signals."""
+    from vcd_parser import parse_vcd, trace_failure, find_signal_by_name
+
+    try:
+        waveform = parse_vcd(vcd_path)
+
+        # Find the signal
+        signal = find_signal_by_name(waveform, failure_signal)
+        if not signal:
+            return {"error": f"Signal '{failure_signal}' not found"}
+
+        causal_chain = trace_failure(waveform, failure_signal, failure_time)
+        return {
+            "failure_signal": failure_signal,
+            "failure_time": failure_time,
+            "causal_chain": causal_chain
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def execute_tool(name: str, args: dict) -> dict:
     """Execute a tool and return result as dict."""
     if name == "compile_verilog":
         result = compile_verilog(args["code"])
+        return result_to_dict(result)
+
     elif name == "simulate":
         result = simulate(args["design_code"], args["testbench_code"])
+        return result_to_dict(result)
+
+    elif name == "simulate_with_vcd":
+        result = simulate_with_vcd(args["design_code"], args["testbench_code"])
+        return {
+            **result_to_dict(result.sim_result),
+            "vcd_path": str(result.vcd_path) if result.vcd_path else None
+        }
+
     elif name == "estimate_resources":
         result = estimate_resources(args["code"], args.get("target", "generic"))
+        return result_to_dict(result)
+
     elif name == "edit_code":
         edited = edit_code(
             args["original"],
@@ -144,10 +296,28 @@ def execute_tool(name: str, args: dict) -> dict:
             args.get("new_content", "")
         )
         return {"edited_code": edited}
+
+    elif name == "extract_interface":
+        return extract_module_interface(args["design_code"])
+
+    elif name == "generate_testbench":
+        return generate_testbench_for_design(
+            args["design_code"],
+            args.get("use_llm", True)
+        )
+
+    elif name == "analyze_vcd":
+        return analyze_vcd(args["vcd_path"])
+
+    elif name == "trace_failure":
+        return trace_failure_in_vcd(
+            args["vcd_path"],
+            args["signal"],
+            args["time"]
+        )
+
     else:
         return {"error": f"Unknown tool: {name}"}
-
-    return result_to_dict(result)
 
 
 # Legacy functions for backward compatibility with existing agent.py
