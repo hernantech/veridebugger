@@ -14,6 +14,7 @@ from parsers import (
     CompileResult,
     SimResult,
     SynthResult,
+    ConvertResult,
     result_to_dict
 )
 
@@ -266,6 +267,142 @@ def trace_failure_in_vcd(vcd_path: str, failure_signal: str, failure_time: int) 
         return {"error": str(e)}
 
 
+def check_c_syntax(code: str) -> ConvertResult:
+    """Check C code syntax using gcc -fsyntax-only."""
+    filepath = WORK_DIR / "design.c"
+    filepath.write_text(code)
+
+    try:
+        result = subprocess.run(
+            ["gcc", "-fsyntax-only", "-Wall", "-Wextra", str(filepath)],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        errors = []
+        # Parse gcc error format: file:line:col: error: message
+        for line in result.stderr.split('\n'):
+            if ': error:' in line or ': warning:' in line:
+                errors.append(line.strip())
+
+        return ConvertResult(
+            success=result.returncode == 0,
+            verilog_code=None,
+            errors=errors,
+            raw_output=result.stderr
+        )
+    except FileNotFoundError:
+        return ConvertResult(
+            success=False,
+            verilog_code=None,
+            errors=["gcc not found - please install gcc"],
+            raw_output=""
+        )
+    except subprocess.TimeoutExpired:
+        return ConvertResult(
+            success=False,
+            verilog_code=None,
+            errors=["gcc timed out"],
+            raw_output=""
+        )
+
+
+def convert_c_to_verilog(code: str, top_function: str = "main") -> ConvertResult:
+    """Convert C code to Verilog using BAMBU HLS.
+
+    Fails fast: checks C syntax first, then runs BAMBU.
+    No auto-fix on failure - returns errors for user to fix.
+    """
+    # Step 1: Check C syntax first (fail fast)
+    syntax_check = check_c_syntax(code)
+    if not syntax_check.success:
+        return ConvertResult(
+            success=False,
+            verilog_code=None,
+            errors=["C syntax errors - fix before conversion:"] + syntax_check.errors,
+            raw_output=syntax_check.raw_output
+        )
+
+    # Step 2: Run BAMBU HLS
+    c_file = WORK_DIR / "design.c"
+    c_file.write_text(code)
+    bambu_out = WORK_DIR / "bambu_out"
+    bambu_out.mkdir(exist_ok=True)
+
+    try:
+        result = subprocess.run(
+            [
+                "bambu",
+                str(c_file),
+                f"--top-fname={top_function}",
+                "-v0"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(WORK_DIR)
+        )
+
+        if result.returncode != 0:
+            errors = []
+            for line in result.stderr.split('\n'):
+                if 'error' in line.lower() or 'Error' in line:
+                    errors.append(line.strip())
+            if not errors:
+                errors = ["BAMBU conversion failed - see raw output"]
+            return ConvertResult(
+                success=False,
+                verilog_code=None,
+                errors=errors,
+                raw_output=result.stdout + result.stderr
+            )
+
+        # Find generated Verilog - BAMBU outputs to cwd with name based on top function
+        expected_output = WORK_DIR / f"{top_function}.v"
+        if expected_output.exists():
+            verilog_code = expected_output.read_text()
+            return ConvertResult(
+                success=True,
+                verilog_code=verilog_code,
+                errors=[],
+                raw_output=result.stdout
+            )
+
+        # Fallback: look for any .v files
+        verilog_files = [f for f in WORK_DIR.glob("*.v") if f.name != "design.v"]
+        if verilog_files:
+            verilog_code = verilog_files[0].read_text()
+            return ConvertResult(
+                success=True,
+                verilog_code=verilog_code,
+                errors=[],
+                raw_output=result.stdout
+            )
+
+        return ConvertResult(
+            success=False,
+            verilog_code=None,
+            errors=["BAMBU completed but no Verilog output found"],
+            raw_output=result.stdout + result.stderr
+        )
+
+    except FileNotFoundError:
+        return ConvertResult(
+            success=False,
+            verilog_code=None,
+            errors=["BAMBU not found - install from https://panda.deib.polimi.it"],
+            raw_output=""
+        )
+    except subprocess.TimeoutExpired:
+        return ConvertResult(
+            success=False,
+            verilog_code=None,
+            errors=["BAMBU timed out after 120 seconds"],
+            raw_output=""
+        )
+
+
 def execute_tool(name: str, args: dict) -> dict:
     """Execute a tool and return result as dict."""
     if name == "compile_verilog":
@@ -315,6 +452,17 @@ def execute_tool(name: str, args: dict) -> dict:
             args["signal"],
             args["time"]
         )
+
+    elif name == "check_c_syntax":
+        result = check_c_syntax(args["code"])
+        return result_to_dict(result)
+
+    elif name == "convert_c_to_verilog":
+        result = convert_c_to_verilog(
+            args["code"],
+            args.get("top_function", "main")
+        )
+        return result_to_dict(result)
 
     else:
         return {"error": f"Unknown tool: {name}"}

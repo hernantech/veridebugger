@@ -55,6 +55,11 @@ class DesignOnlyRequest(BaseModel):
     design_code: str
 
 
+class ConvertRequest(BaseModel):
+    c_code: str
+    top_function: str = "main"
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -248,6 +253,52 @@ async def testgen_full_sync(request: TestGenRequest):
         "lut_history": final.get("lut_history", []),
         "iterations": final.get("iteration", 0),
         "reasoning": [r.get("reasoning") for r in results if r.get("reasoning")]
+    }
+
+
+# ============== C to Verilog Conversion ==============
+
+@app.post("/convert")
+async def convert_c_to_verilog(request: ConvertRequest):
+    """Convert C code to Verilog using BAMBU HLS.
+
+    Fails fast: validates C syntax with gcc first, then runs BAMBU.
+    No auto-fix on failure - returns errors for user to fix manually.
+    """
+    result = execute_tool("convert_c_to_verilog", {
+        "code": request.c_code,
+        "top_function": request.top_function
+    })
+
+    if result.get("success"):
+        return {
+            "success": True,
+            "verilog_code": result["verilog_code"],
+            "message": "C code successfully converted to Verilog"
+        }
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "errors": result.get("errors", ["Unknown error"]),
+                "raw_output": result.get("raw_output", "")
+            }
+        )
+
+
+@app.post("/convert/check")
+async def check_c_syntax(request: ConvertRequest):
+    """Check C code syntax without conversion.
+
+    Use this to validate C code before attempting full HLS conversion.
+    """
+    result = execute_tool("check_c_syntax", {"code": request.c_code})
+
+    return {
+        "success": result.get("success", False),
+        "errors": result.get("errors", []),
+        "raw_output": result.get("raw_output", "")
     }
 
 

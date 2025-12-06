@@ -50,6 +50,15 @@ class SynthResult:
     raw_output: str
 
 
+@dataclass
+class ConvertResult:
+    """Result of C-to-Verilog HLS conversion."""
+    success: bool
+    verilog_code: str | None
+    errors: list[str]
+    raw_output: str
+
+
 def parse_iverilog_compile(output: str, returncode: int) -> CompileResult:
     """Parse iverilog compilation output."""
     errors = []
@@ -213,7 +222,7 @@ def parse_yosys_synth(output: str, returncode: int) -> SynthResult:
     )
 
 
-def result_to_dict(result: CompileResult | SimResult | SynthResult) -> dict:
+def result_to_dict(result: CompileResult | SimResult | SynthResult | ConvertResult) -> dict:
     """Convert dataclass result to dict for JSON serialization."""
     if isinstance(result, CompileResult):
         return {
@@ -233,6 +242,13 @@ def result_to_dict(result: CompileResult | SimResult | SynthResult) -> dict:
             'luts': result.luts,
             'ffs': result.ffs,
             'cells': result.cells,
+            'errors': result.errors,
+            'raw_output': result.raw_output
+        }
+    elif isinstance(result, ConvertResult):
+        return {
+            'success': result.success,
+            'verilog_code': result.verilog_code,
             'errors': result.errors,
             'raw_output': result.raw_output
         }
