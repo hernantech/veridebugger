@@ -30,7 +30,6 @@ const WaveformSignal = ({ signal, currentTimestep, isSelected, onSelect }: Wavef
   const pathD = useMemo(() => {
     const points: string[] = [];
     let lastValue: SignalValue | null = null;
-    let lastX = 0;
 
     signal.values.forEach((v, i) => {
       const x = i * TIME_SCALE;
@@ -47,7 +46,6 @@ const WaveformSignal = ({ signal, currentTimestep, isSelected, onSelect }: Wavef
       
       points.push(`L ${x + TIME_SCALE} ${y}`);
       lastValue = v.value;
-      lastX = x + TIME_SCALE;
     });
 
     return points.join(' ').replace('L', 'M');

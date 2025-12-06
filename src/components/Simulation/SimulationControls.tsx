@@ -48,7 +48,6 @@ const SimulationControls = () => {
   };
 
   const isRunning = simState?.status === 'running';
-  const isPaused = simState?.status === 'paused';
   const isIdle = simState?.status === 'idle' || simState?.status === 'completed';
 
   const progress = simState 

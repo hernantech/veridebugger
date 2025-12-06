@@ -381,13 +381,13 @@ Is there a specific signal or timing relationship you'd like me to analyze furth
    * Stream a response (simulated)
    */
   streamMessage(
-    content: string,
+    _content: string,
     context: ChatContext | undefined,
     onChunk: (chunk: string) => void,
     onComplete: (message: ChatMessage) => void
   ): () => void {
     let cancelled = false;
-    
+
     const fullResponse = `I'm analyzing your request about the circuit...
 
 Based on the context you've provided, I can see that you're working with an attention mechanism implementation. Let me break down what I observe:

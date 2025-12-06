@@ -1,9 +1,9 @@
 import { useState, useCallback, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { CircuitVisualization } from '../Circuit';
-import { SimulationControls, WaveformView, LUTTable } from '../Simulation';
+import { SimulationControls, WaveformView, LUTTable, OptimizationAgentPanel } from '../Simulation';
 import { ChatPanel } from '../Chat';
-import { useOptimizationStore } from '../../store';
+import { useOptimizationStore, useCurrentOptimizationRun } from '../../store';
 import {
   PanelLeftClose,
   PanelRightClose,
@@ -13,10 +13,11 @@ import {
   Activity,
   MessageSquare,
   BarChart3,
+  Zap,
 } from 'lucide-react';
 import './MainLayout.css';
 
-type ActiveTab = 'waveform' | 'lut';
+type ActiveTab = 'waveform' | 'lut' | 'agent';
 
 const MainLayout = () => {
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
@@ -24,6 +25,7 @@ const MainLayout = () => {
   const [bottomExpanded, setBottomExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>('waveform');
   const { fetchStats } = useOptimizationStore();
+  const currentRun = useCurrentOptimizationRun();
 
   // Fetch optimization stats on mount
   useEffect(() => {
@@ -132,6 +134,16 @@ const MainLayout = () => {
                   <BarChart3 size={14} />
                   LUT Analysis
                 </button>
+                <button
+                  className={`main-layout__tab ${activeTab === 'agent' ? 'main-layout__tab--active' : ''}`}
+                  onClick={() => setActiveTab('agent')}
+                >
+                  <Zap size={14} />
+                  AI Agent
+                  {currentRun && !['completed', 'failed'].includes(currentRun.status) && (
+                    <span className="main-layout__tab-indicator" />
+                  )}
+                </button>
               </div>
               <button
                 className="main-layout__expand-toggle"
@@ -141,7 +153,9 @@ const MainLayout = () => {
               </button>
             </div>
             <div className="main-layout__bottom-content">
-              {activeTab === 'waveform' ? <WaveformView /> : <LUTTable />}
+              {activeTab === 'waveform' && <WaveformView />}
+              {activeTab === 'lut' && <LUTTable />}
+              {activeTab === 'agent' && <OptimizationAgentPanel />}
             </div>
           </motion.div>
         </div>

@@ -141,7 +141,7 @@ export interface ChatContext {
 }
 
 export interface CodeSnippet {
-  language: 'verilog' | 'vhdl' | 'systemverilog' | 'json';
+  language: 'verilog' | 'vhdl' | 'systemverilog' | 'json' | 'text';
   code: string;
   filename?: string;
   highlightLines?: number[];

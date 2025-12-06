@@ -20,6 +20,18 @@ import {
   mockWebSocket,
 } from '../api/client';
 
+// Re-export the optimization agent store for backend integration
+export {
+  useOptimizationAgentStore,
+  useCurrentOptimizationRun,
+  useOptimizationStatus,
+  useLutHistory,
+  useCurrentCode,
+  useAgentReasoning,
+  useDesignCode,
+  useTestbenchCode,
+} from './optimizationAgentStore';
+
 // ============================================
 // Circuit Store
 // ============================================
@@ -299,7 +311,7 @@ interface ChatStore {
 
 let cancelStreamingFn: (() => void) | null = null;
 
-export const useChatStore = create<ChatStore>((set, get) => ({
+export const useChatStore = create<ChatStore>((set, _get) => ({
   messages: [],
   isLoading: false,
   isStreaming: false,
