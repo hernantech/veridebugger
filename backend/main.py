@@ -1,39 +1,36 @@
 """
-FastAPI backend for Verilog optimization agent.
+FastAPI backend for FPGA optimization agent with debugging and test generation.
 """
-import asyncio
+
 import uuid
-from typing import Literal
 from contextlib import asynccontextmanager
+from typing import Dict
+from dotenv import load_dotenv
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from agent import create_agent_graph, AgentState
+# Load environment variables from .env file
+load_dotenv()
+
+from agent import run_agent, run_agent_streaming, run_testgen_agent
+from tools import execute_tool
 
 
-# Store for active runs
-runs: dict[str, AgentState] = {}
-run_tasks: dict[str, asyncio.Task] = {}
+active_runs: Dict[str, dict] = {}
+testgen_runs: Dict[str, dict] = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    # Cleanup on shutdown
-    for task in run_tasks.values():
-        task.cancel()
+    active_runs.clear()
+    testgen_runs.clear()
 
 
-app = FastAPI(
-    title="Verilog Optimization Agent",
-    description="Iteratively optimize Verilog code using AI",
-    version="0.1.0",
-    lifespan=lifespan
-)
+app = FastAPI(title="FPGA VeriDebugger Agent", lifespan=lifespan)
 
-# CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,128 +40,297 @@ app.add_middleware(
 )
 
 
-class RunRequest(BaseModel):
-    target: str = "4x4 matmul"
+class OptimizeRequest(BaseModel):
+    design_code: str
+    testbench_code: str
+    max_iterations: int = 10
+
+
+class TestGenRequest(BaseModel):
+    design_code: str
     max_iterations: int = 5
 
 
-class RunResponse(BaseModel):
-    run_id: str
-    status: str
+class DesignOnlyRequest(BaseModel):
+    design_code: str
 
 
-class StatusResponse(BaseModel):
-    iteration: int
-    state: Literal["generating", "simulating", "estimating", "complete", "failed"]
-    code: str
-    lut_count: int | None
-    lut_history: list[int]
-    agent_reasoning: str
-    sim_passed: bool
-    error: str | None
-
-
-@app.post("/run", response_model=RunResponse)
-async def start_run(request: RunRequest):
-    """Start a new optimization run."""
-    run_id = str(uuid.uuid4())
-
-    initial_state: AgentState = {
-        "iteration": 0,
-        "max_iterations": request.max_iterations,
-        "current_code": "",
-        "best_code": "",
-        "lut_count": 0,
-        "best_lut_count": None,
-        "lut_history": [],
-        "sim_passed": False,
-        "error": None,
-        "agent_reasoning": "",
-        "state": "generating"
-    }
-
-    runs[run_id] = initial_state
-
-    # Start the agent in background
-    async def run_agent():
-        agent = create_agent_graph()
-        # Run synchronously since langgraph doesn't have native async
-        loop = asyncio.get_event_loop()
-        final_state = await loop.run_in_executor(
-            None,
-            lambda: agent.invoke(initial_state)
-        )
-        runs[run_id] = final_state
-
-    task = asyncio.create_task(run_agent())
-    run_tasks[run_id] = task
-
-    return RunResponse(run_id=run_id, status="started")
-
-
-@app.get("/status/{run_id}", response_model=StatusResponse)
-async def get_status(run_id: str):
-    """Get the current status of a run."""
-    if run_id not in runs:
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    state = runs[run_id]
-
-    return StatusResponse(
-        iteration=state["iteration"],
-        state=state["state"],
-        code=state["current_code"],
-        lut_count=state["lut_count"] if state["lut_count"] else None,
-        lut_history=state["lut_history"],
-        agent_reasoning=state["agent_reasoning"],
-        sim_passed=state["sim_passed"],
-        error=state["error"]
-    )
-
-
-@app.websocket("/stream/{run_id}")
-async def stream_updates(websocket: WebSocket, run_id: str):
-    """Stream real-time updates for a run."""
-    await websocket.accept()
-
-    if run_id not in runs:
-        await websocket.send_json({"error": "Run not found"})
-        await websocket.close()
-        return
-
-    try:
-        last_state = None
-        while True:
-            state = runs.get(run_id)
-
-            if state and state != last_state:
-                await websocket.send_json({
-                    "iteration": state["iteration"],
-                    "state": state["state"],
-                    "code": state["current_code"],
-                    "lut_count": state["lut_count"] if state["lut_count"] else None,
-                    "lut_history": state["lut_history"],
-                    "agent_reasoning": state["agent_reasoning"],
-                    "sim_passed": state["sim_passed"],
-                    "error": state["error"]
-                })
-                last_state = state.copy() if state else None
-
-                if state["state"] in ("complete", "failed"):
-                    break
-
-            await asyncio.sleep(0.5)
-
-    except WebSocketDisconnect:
-        pass
+class ConvertRequest(BaseModel):
+    c_code: str
+    top_function: str = "main"
 
 
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+    return {"status": "ok"}
+
+
+@app.post("/start")
+async def start_optimization(request: OptimizeRequest):
+    run_id = str(uuid.uuid4())[:8]
+
+    active_runs[run_id] = {
+        "design_code": request.design_code,
+        "testbench_code": request.testbench_code,
+        "max_iterations": request.max_iterations,
+        "status": "pending",
+        "history": []
+    }
+
+    return {"run_id": run_id, "message": f"Connect to WebSocket at /stream/{run_id}"}
+
+
+@app.get("/status/{run_id}")
+async def get_status(run_id: str):
+    if run_id not in active_runs:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = active_runs[run_id]
+    return {
+        "run_id": run_id,
+        "status": run["status"],
+        "history": run["history"],
+        "latest": run["history"][-1] if run["history"] else None
+    }
+
+
+@app.websocket("/stream/{run_id}")
+async def stream_optimization(websocket: WebSocket, run_id: str):
+    await websocket.accept()
+
+    if run_id not in active_runs:
+        await websocket.send_json({"error": "Run not found"})
+        await websocket.close()
+        return
+
+    run = active_runs[run_id]
+    run["status"] = "running"
+
+    try:
+        async for step in run_agent_streaming(
+            design_code=run["design_code"],
+            testbench_code=run["testbench_code"],
+            max_iterations=run["max_iterations"]
+        ):
+            run["history"].append(step)
+            await websocket.send_json(step)
+
+            if step["done"]:
+                break
+
+        run["status"] = "completed"
+        await websocket.send_json({"done": True, "status": "completed"})
+
+    except WebSocketDisconnect:
+        run["status"] = "disconnected"
+    except Exception as e:
+        run["status"] = "error"
+        await websocket.send_json({"error": str(e)})
+    finally:
+        await websocket.close()
+
+
+@app.post("/optimize")
+async def optimize_sync(request: OptimizeRequest):
+    results = []
+
+    async for step in run_agent(
+        design_code=request.design_code,
+        testbench_code=request.testbench_code,
+        max_iterations=request.max_iterations
+    ):
+        results.append(step)
+        if step["done"]:
+            break
+
+    if not results:
+        raise HTTPException(status_code=500, detail="Agent produced no results")
+
+    final = results[-1]
+    return {
+        "final_code": final["code"],
+        "lut_history": final["lut_history"],
+        "iterations": final["iteration"],
+        "reasoning": [r["reasoning"] for r in results if r.get("reasoning")]
+    }
+
+
+# ============== Test Generation Endpoints ==============
+
+@app.post("/testgen/interface")
+async def extract_interface(request: DesignOnlyRequest):
+    """Extract module interface from design code."""
+    result = execute_tool("extract_interface", {"design_code": request.design_code})
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.post("/testgen/generate")
+async def generate_testbench(request: DesignOnlyRequest):
+    """Generate a testbench for the design using LLM."""
+    result = execute_tool("generate_testbench", {
+        "design_code": request.design_code,
+        "use_llm": True
+    })
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.post("/testgen/start")
+async def start_testgen(request: TestGenRequest):
+    """Start autonomous test generation and verification loop."""
+    run_id = str(uuid.uuid4())[:8]
+
+    testgen_runs[run_id] = {
+        "design_code": request.design_code,
+        "max_iterations": request.max_iterations,
+        "status": "pending",
+        "history": []
+    }
+
+    return {"run_id": run_id, "message": f"Connect to WebSocket at /testgen/stream/{run_id}"}
+
+
+@app.websocket("/testgen/stream/{run_id}")
+async def stream_testgen(websocket: WebSocket, run_id: str):
+    """Stream test generation and verification progress."""
+    await websocket.accept()
+
+    if run_id not in testgen_runs:
+        await websocket.send_json({"error": "Run not found"})
+        await websocket.close()
+        return
+
+    run = testgen_runs[run_id]
+    run["status"] = "running"
+
+    try:
+        async for step in run_testgen_agent(
+            design_code=run["design_code"],
+            max_iterations=run["max_iterations"]
+        ):
+            run["history"].append(step)
+            await websocket.send_json(step)
+
+            if step.get("done"):
+                break
+
+        run["status"] = "completed"
+        await websocket.send_json({"done": True, "status": "completed"})
+
+    except WebSocketDisconnect:
+        run["status"] = "disconnected"
+    except Exception as e:
+        run["status"] = "error"
+        await websocket.send_json({"error": str(e)})
+    finally:
+        await websocket.close()
+
+
+@app.post("/testgen/full")
+async def testgen_full_sync(request: TestGenRequest):
+    """Run full test generation + verification synchronously."""
+    results = []
+
+    async for step in run_testgen_agent(
+        design_code=request.design_code,
+        max_iterations=request.max_iterations
+    ):
+        results.append(step)
+        if step.get("done"):
+            break
+
+    if not results:
+        raise HTTPException(status_code=500, detail="Agent produced no results")
+
+    final = results[-1]
+    return {
+        "final_code": final.get("code", request.design_code),
+        "generated_testbench": final.get("generated_testbench"),
+        "interface": final.get("interface"),
+        "lut_history": final.get("lut_history", []),
+        "iterations": final.get("iteration", 0),
+        "reasoning": [r.get("reasoning") for r in results if r.get("reasoning")]
+    }
+
+
+# ============== C to Verilog Conversion ==============
+
+@app.post("/convert")
+async def convert_c_to_verilog(request: ConvertRequest):
+    """Convert C code to Verilog using BAMBU HLS.
+
+    Fails fast: validates C syntax with gcc first, then runs BAMBU.
+    No auto-fix on failure - returns errors for user to fix manually.
+    """
+    result = execute_tool("convert_c_to_verilog", {
+        "code": request.c_code,
+        "top_function": request.top_function
+    })
+
+    if result.get("success"):
+        return {
+            "success": True,
+            "verilog_code": result["verilog_code"],
+            "message": "C code successfully converted to Verilog"
+        }
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "errors": result.get("errors", ["Unknown error"]),
+                "raw_output": result.get("raw_output", "")
+            }
+        )
+
+
+@app.post("/convert/check")
+async def check_c_syntax(request: ConvertRequest):
+    """Check C code syntax without conversion.
+
+    Use this to validate C code before attempting full HLS conversion.
+    """
+    result = execute_tool("check_c_syntax", {"code": request.c_code})
+
+    return {
+        "success": result.get("success", False),
+        "errors": result.get("errors", []),
+        "raw_output": result.get("raw_output", "")
+    }
+
+
+# ============== Debug Endpoints ==============
+
+@app.post("/debug/vcd")
+async def run_with_vcd(request: OptimizeRequest):
+    """Run simulation with VCD capture and return waveform info."""
+    result = execute_tool("simulate_with_vcd", {
+        "design_code": request.design_code,
+        "testbench_code": request.testbench_code
+    })
+    return result
+
+
+@app.post("/debug/analyze")
+async def analyze_vcd_endpoint(vcd_path: str):
+    """Analyze a VCD file and return signal summary."""
+    result = execute_tool("analyze_vcd", {"vcd_path": vcd_path})
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+# ============== Legacy ==============
+
+@app.post("/run")
+async def legacy_run(request: OptimizeRequest):
+    """Legacy endpoint - redirects to /start."""
+    return await start_optimization(request)
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8080)
