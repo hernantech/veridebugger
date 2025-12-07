@@ -14,6 +14,34 @@ import {
   type StreamStep,
 } from '../api/backendApi';
 
+/**
+ * Extract the top-level function name from C code.
+ * Looks for function definitions and returns the first non-main function,
+ * or 'main' if that's the only one.
+ */
+function extractTopFunction(cCode: string): string {
+  // Match C function definitions: return_type function_name(params) {
+  // Handles: void foo(...), int bar(...), static void baz(...), etc.
+  const funcPattern = /(?:^|[\s;{}])(?:static\s+)?(?:inline\s+)?(?:const\s+)?(?:unsigned\s+)?(?:signed\s+)?(?:long\s+)?(?:short\s+)?(?:void|int|char|float|double|bool|\w+_t)\s+\**\s*(\w+)\s*\([^)]*\)\s*\{/gm;
+
+  const functions: string[] = [];
+  let match;
+  while ((match = funcPattern.exec(cCode)) !== null) {
+    const funcName = match[1];
+    // Skip common non-top-level function names
+    if (funcName && !funcName.startsWith('_')) {
+      functions.push(funcName);
+    }
+  }
+
+  // Prefer non-main functions as the top function for HLS
+  const nonMain = functions.find(f => f !== 'main');
+  if (nonMain) return nonMain;
+
+  // Fall back to main or first function found
+  return functions[0] || 'main';
+}
+
 type AgentMode = 'optimize' | 'testgen';
 type AgentStatus = 'idle' | 'starting' | 'running' | 'completed' | 'failed';
 export type CodeLanguage = 'verilog' | 'c';
@@ -197,9 +225,12 @@ export const useOptimizationAgentStore = create<OptimizationAgentStore>((set, ge
     set({ isConverting: true, conversionMessage: null, conversionSuccess: null });
 
     try {
+      // Extract the top function name from the C code
+      const topFunction = extractTopFunction(designCode);
+
       const response = await backendApi.convertCToVerilog({
         c_code: designCode,
-        top_function: 'matmul', // Default top function
+        top_function: topFunction,
       });
 
       if (response.success && response.verilog_code) {
