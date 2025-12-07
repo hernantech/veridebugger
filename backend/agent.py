@@ -575,7 +575,9 @@ async def run_agent(design_code: str, testbench_code: str, max_iterations: int =
     }
 
     try:
-        final_state = graph.invoke(initial_state)
+        # Set recursion limit high enough for max_iterations * steps_per_iteration
+        config = {"recursion_limit": max(50, max_iterations * 5)}
+        final_state = graph.invoke(initial_state, config)
 
         yield {
             "phase": final_state["phase"],
@@ -625,7 +627,9 @@ async def run_agent_streaming(design_code: str, testbench_code: str, max_iterati
     }
 
     try:
-        for output in graph.stream(initial_state):
+        # Set recursion limit high enough for max_iterations * steps_per_iteration
+        config = {"recursion_limit": max(50, max_iterations * 5)}
+        for output in graph.stream(initial_state, config):
             if isinstance(output, dict):
                 for node_name, node_state in output.items():
                     if isinstance(node_state, dict):
