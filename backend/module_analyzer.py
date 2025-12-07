@@ -91,13 +91,25 @@ class ModuleInterface:
 def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
     """Extract module interface from Verilog code."""
 
-    # Find module declaration
-    # module name (...); or module name #(...) (...);
-    module_match = re.search(
+    # Find module declaration - try multiple patterns
+    # Pattern 1: ANSI-style module name (...);
+    # Pattern 2: module name #(...) (...);
+    # Pattern 3: module name (\n  ports... \n);  (multi-line)
+
+    patterns = [
+        # Standard: module name(...);
         r'module\s+(\w+)\s*(?:#\s*\([^)]*\))?\s*\(([^;]*)\)\s*;',
-        verilog_code,
-        re.DOTALL
-    )
+        # Without trailing semicolon after ports (some tools)
+        r'module\s+(\w+)\s*(?:#\s*\([^)]*\))?\s*\(([^)]+)\)',
+        # Verilog-2001 with port list only in header
+        r'module\s+(\w+)\s*\(([^)]*)\)',
+    ]
+
+    module_match = None
+    for pattern in patterns:
+        module_match = re.search(pattern, verilog_code, re.DOTALL)
+        if module_match:
+            break
 
     if not module_match:
         return None
@@ -123,10 +135,21 @@ def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
 
     # Style 1: ANSI-style in module header
     # input wire [7:0] data,
-    ansi_pattern = r'(input|output|inout)\s+(wire|reg)?\s*(signed)?\s*(?:\[(\d+):(\d+)\])?\s*(\w+)(?:\s*\[(\d+):(\d+)\])?'
+    # input [7:0] data,
+    # input data,
+    ansi_patterns = [
+        # Full: input wire signed [7:0] name [3:0]
+        r'(input|output|inout)\s+(wire|reg)?\s*(signed)?\s*(?:\[(\d+):(\d+)\])?\s*(\w+)(?:\s*\[(\d+):(\d+)\])?',
+        # Without wire/reg: input [7:0] name
+        r'(input|output|inout)\s+(signed)?\s*\[(\d+):(\d+)\]\s*(\w+)',
+        # Simple: input name
+        r'(input|output|inout)\s+(\w+)\s*(?:,|$|\))',
+    ]
 
     port_section = module_match.group(2)
-    for match in re.finditer(ansi_pattern, port_section):
+
+    # Try full pattern first
+    for match in re.finditer(ansi_patterns[0], port_section):
         direction, _, signed, msb, lsb, name, arr_msb, arr_lsb = match.groups()
 
         width = 1
@@ -146,6 +169,32 @@ def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
             is_array=is_array,
             array_dims=array_dims
         ))
+
+    # Try simpler patterns if full pattern didn't find ports
+    if not interface.ports:
+        # Pattern: input [7:0] name (without wire/reg)
+        for match in re.finditer(ansi_patterns[1], port_section):
+            direction, signed, msb, lsb, name = match.groups()
+            width = abs(int(msb) - int(lsb)) + 1
+            interface.ports.append(Port(
+                name=name,
+                direction=direction,
+                width=width,
+                is_signed=signed is not None
+            ))
+
+    if not interface.ports:
+        # Pattern: input name (simple, 1-bit)
+        for match in re.finditer(ansi_patterns[2], port_section):
+            direction, name = match.groups()
+            # Skip if name looks like a keyword
+            if name.lower() not in ('wire', 'reg', 'signed', 'integer'):
+                interface.ports.append(Port(
+                    name=name,
+                    direction=direction,
+                    width=1,
+                    is_signed=False
+                ))
 
     # Style 2: Non-ANSI style declarations in body
     # input clk; input [7:0] data;
@@ -263,7 +312,20 @@ def generate_edge_cases(interface: ModuleInterface) -> list[dict]:
 def to_dict(interface: ModuleInterface) -> dict:
     """Convert interface to dict for JSON serialization."""
     return {
+        # Frontend expects module_name
+        "module_name": interface.name,
+        # Also include 'name' for backward compatibility
         "name": interface.name,
+        # Frontend expects separate inputs/outputs arrays
+        "inputs": [
+            {"name": p.name, "width": p.width}
+            for p in interface.ports if p.direction == "input"
+        ],
+        "outputs": [
+            {"name": p.name, "width": p.width}
+            for p in interface.ports if p.direction == "output"
+        ],
+        # Also include full ports list for backward compatibility
         "ports": [
             {
                 "name": p.name,
@@ -274,10 +336,9 @@ def to_dict(interface: ModuleInterface) -> dict:
             }
             for p in interface.ports
         ],
-        "parameters": [
-            {"name": p.name, "default": p.default_value}
-            for p in interface.parameters
-        ],
+        "parameters": {
+            p.name: p.default_value for p in interface.parameters
+        },
         "has_clock": interface.has_clock,
         "has_reset": interface.has_reset,
         "clock_name": interface.clock_name,
