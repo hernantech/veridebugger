@@ -1,140 +1,221 @@
-# Veridebug - FPGA Transformer Debugger
+# VeriDebug - AI-Powered Verilog Debugger & Optimizer
 
-A beautiful, reactive frontend for running transformer inference on FPGAs with a Gemini 3-based "vibe debugging" assistant that helps generate code, debug it, and optimize LUT usage.
+An AI agent that iteratively debugs, tests, and optimizes Verilog/HDL code using Gemini and LangGraph. Supports direct Verilog input or C-to-Verilog conversion via BAMBU HLS.
 
-![Veridebug Screenshot](./screenshot.png)
+## What It Does
 
-## Features
+VeriDebug uses an AI agent to automatically:
+- **Fix compilation errors** in your Verilog code
+- **Debug simulation failures** by analyzing VCD waveforms
+- **Optimize for fewer LUTs** through iterative refinement
+- **Convert C to Verilog** using BAMBU HLS, then debug/optimize the result
+- **Generate testbenches** for your designs
 
-### 🔲 Circuit & LUT Visualization Panel
-- Visual, node-based view of FPGA circuit topology using ReactFlow
-- Shows logical elements (LUTs, Registers, DSPs, I/O, MUX) as color-coded nodes
-- Displays LUT utilization with color-coded bars
-- Critical path highlighting with pulsing indicators
-- Zoom, pan, and node selection
-- Real-time signal value display (0/1/X/Z states)
-- Interactive minimap for navigation
+## Use Cases
 
-### ⚡ Simulation & Controls Panel
-- Start/Stop/Pause/Resume simulation controls
-- Single-step mode for detailed debugging
-- Progress bar with timestep counter
-- Clock frequency display
-- Transformer model selection (Tiny/Small/Medium)
-- Precision configuration (FP32/FP16/INT8/INT4)
-- Sequence length and pipeline depth settings
+### 1. Optimize Verilog for Fewer LUTs
 
-### 📊 Signal Waveforms
-- Time-based waveform view of key signals
-- Input/output signal indicators
-- Click-to-seek timeline navigation
-- Auto-scroll to follow simulation progress
-- Signal selection for context
+Paste your Verilog code, provide a testbench, and let the agent iterate until it uses fewer LUTs while passing all tests.
 
-### 📋 LUT Analysis Table
-- Sortable table of all LUT nodes
-- Per-LUT utilization bars
-- Fan-in/fan-out information
-- Critical path indicators
-- Current signal values
-
-### 💡 Optimization Suggestions
-- AI-generated LUT optimization suggestions
-- Before/after LUT count comparison
-- Latency impact indicators
-- Confidence scores
-- One-click apply optimization
-
-### 💬 Vibe Debugging Chat Panel
-- Chat interface for Gemini 3 assistant
-- Context-aware conversations (selected nodes, signals, timestep)
-- Code snippet display with syntax highlighting
-- Copy-to-clipboard functionality
-- Quick prompt suggestions
-- Streaming responses
-
-## Tech Stack
-
-- **React 18** with TypeScript
-- **Vite** for fast development
-- **ReactFlow** for circuit visualization
-- **Framer Motion** for animations
-- **Zustand** for state management
-- **Lucide React** for icons
-
-## Getting Started
-
-### Prerequisites
-- Node.js 18+
-- npm or yarn
-
-### Installation
-
-```bash
-# Clone the repository
-cd veridebug
-
-# Install dependencies
-npm install
-
-# Start development server
-npm run dev
+```
+1. Paste your Verilog module in the Design Code editor
+2. Paste your testbench in the Testbench editor (or click "Auto-generate")
+3. Set Goal to "Optimize"
+4. Click "Start Optimization"
+5. Watch the agent compile → simulate → synthesize → optimize in a loop
+6. LUT count decreases with each iteration until convergence
 ```
 
-The app will be available at `http://localhost:5173`
+The agent will:
+- Compile with `iverilog`
+- Run simulation with `vvp`
+- Synthesize with `yosys` to count LUTs
+- Ask Gemini for optimizations
+- Apply edits and repeat
 
-### Build for Production
+### 2. Convert C Code to Verilog
 
-```bash
-npm run build
+Write bare C code and convert it to synthesizable Verilog using BAMBU HLS.
+
 ```
+1. Switch language to "C"
+2. Write your C function (e.g., matrix multiply, FIR filter)
+3. Click "Convert to Verilog"
+4. The agent auto-detects your top function and runs BAMBU
+5. Result: synthesizable Verilog ready for simulation
+```
+
+Example C input:
+```c
+void fir_filter(int input[8], int coeffs[8], int *output) {
+    int sum = 0;
+    for (int i = 0; i < 8; i++) {
+        sum += input[i] * coeffs[i];
+    }
+    *output = sum;
+}
+```
+
+### 3. Debug Failing Simulations
+
+If your testbench fails, the agent analyzes VCD waveforms to find the root cause.
+
+```
+1. Paste buggy Verilog + testbench
+2. Set Goal to "Verify"
+3. Click "Start"
+4. Agent compiles, simulates, captures VCD
+5. On failure: traces signals backward to find the bug
+6. Gemini analyzes the signal trace and suggests a fix
+7. Agent applies fix and re-runs until tests pass
+```
+
+### 4. Just Compile (Syntax Check)
+
+Set Goal to "Compile" to only fix syntax errors without running simulation.
+
+### 5. Auto-Generate Testbenches
+
+Click "Auto-generate Testbench" to create a testbench from your module's interface. The agent extracts ports, clock/reset signals, and generates appropriate test vectors.
+
+## Architecture: LangGraph Agent
+
+The backend uses [LangGraph](https://github.com/langchain-ai/langgraph) to orchestrate a multi-phase debugging workflow.
+
+### State Machine
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      LangGraph Agent                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   ┌─────────┐    ┌──────────┐    ┌────────────┐            │
+│   │ COMPILE │───►│ SIMULATE │───►│ SYNTHESIZE │            │
+│   └────┬────┘    └────┬─────┘    └─────┬──────┘            │
+│        │              │                │                    │
+│        │ errors       │ failures       │ success            │
+│        ▼              ▼                ▼                    │
+│   ┌─────────┐    ┌─────────┐     ┌──────────┐              │
+│   │   FIX   │◄───│  DEBUG  │     │ OPTIMIZE │              │
+│   │ (Gemini)│    │  (VCD)  │     │ (Gemini) │              │
+│   └────┬────┘    └─────────┘     └────┬─────┘              │
+│        │                              │                     │
+│        └──────────────────────────────┘                     │
+│                    loop until done                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Nodes (Phases)
+
+| Node | Tool Used | Description |
+|------|-----------|-------------|
+| `compile` | `iverilog` | Compile Verilog, collect errors |
+| `simulate` | `vvp` | Run testbench, capture VCD waveforms |
+| `debug` | VCD parser | Trace signals backward from failure point |
+| `synthesize` | `yosys` | Estimate LUT/cell count |
+| `fix` | Gemini API | Generate code edits based on errors |
+| `optimize` | Gemini API | Suggest LUT-reducing transformations |
+
+### Goal-Aware Routing
+
+The agent's behavior changes based on the selected goal:
+
+- **`compile`**: Stop after successful compilation
+- **`verify`**: Stop after all tests pass
+- **`optimize`**: Continue iterating to reduce LUTs until convergence
+
+### Error-Specific Prompts
+
+The agent uses specialized prompts for different error types:
+- **Syntax errors**: Focus on semicolons, begin/end matching
+- **Binding errors**: Focus on undeclared signals, typos
+- **Logic errors**: Analyze VCD trace, explain signal behavior
 
 ## Project Structure
 
 ```
-src/
-├── api/
-│   ├── client.ts      # Mock API client
-│   └── mockData.ts    # Mock data generators
-├── components/
-│   ├── Chat/          # Chat panel components
-│   ├── Circuit/       # Circuit visualization
-│   ├── Layout/        # Main layout
-│   └── Simulation/    # Simulation controls & waveforms
-├── store/
-│   └── index.ts       # Zustand state management
-├── types/
-│   └── index.ts       # TypeScript interfaces
-├── App.tsx
-├── App.css
-└── index.css
+veridebugger/
+├── backend/
+│   ├── agent.py          # LangGraph state machine
+│   ├── tools.py          # iverilog, yosys, BAMBU wrappers
+│   ├── parsers.py        # Parse tool outputs
+│   ├── module_analyzer.py # Extract Verilog interfaces
+│   ├── testgen.py        # Auto-generate testbenches
+│   ├── vcd_parser.py     # Parse VCD waveforms
+│   └── main.py           # FastAPI endpoints
+├── src/                   # React frontend
+│   ├── components/
+│   ├── store/            # Zustand state
+│   └── api/              # Backend API client
+├── package.json          # Frontend deps
+└── vercel.json           # Vercel deployment config
 ```
 
-## TypeScript Types
+## Installation
 
-The app defines comprehensive TypeScript interfaces for:
-- FPGA nodes and connections
-- Simulation state and signals
-- Transformer configurations
-- Optimization suggestions
-- Chat messages and context
+### Backend
 
-## API Integration
+```bash
+cd backend
 
-The frontend is designed to connect to backend APIs for:
-- FPGA control and simulation
-- Gemini 3 + LangGraph orchestration
-- HDL analysis and optimization
+# Install Python deps
+pip install -r requirements.txt
 
-Currently uses mock API clients that simulate realistic responses.
+# Install HDL tools
+sudo apt install iverilog yosys
 
-## Design Philosophy
+# Install BAMBU HLS (for C-to-Verilog)
+# See: https://panda.dei.polimi.it/?page_id=31
 
-- **Clean, professional UI** - No purple gradients, neutral colors with blue/green accents
-- **Flashy via motion** - Smooth animations and transitions, not loud colors
-- **Information density** - Multiple panels with relevant data visible at once
-- **Cross-panel interaction** - Selecting nodes/signals updates all panels
-- **Developer-friendly** - Monospace fonts for code, clear visual hierarchy
+# Set API key
+export GOOGLE_API_KEY=your_gemini_api_key
+
+# Run
+uvicorn main:app --reload --port 8080
+```
+
+### Frontend
+
+```bash
+# Install deps
+npm install
+
+# Configure backend URL
+cp .env.example .env
+# Edit .env with your backend URL
+
+# Run dev server
+npm run dev
+```
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/start` | POST | Start optimization run |
+| `/stream/{run_id}` | WS | Stream agent progress |
+| `/convert` | POST | Convert C to Verilog |
+| `/testgen/generate` | POST | Generate testbench |
+| `/testgen/interface` | POST | Extract module interface |
+
+## Environment Variables
+
+### Frontend (`.env`)
+```
+VITE_API_URL=http://localhost:8080
+VITE_WS_URL=ws://localhost:8080
+```
+
+### Backend
+```
+GOOGLE_API_KEY=your_gemini_api_key
+```
+
+## Tech Stack
+
+- **Frontend**: React, TypeScript, Vite, Zustand, Monaco Editor
+- **Backend**: FastAPI, LangGraph, Google Gemini API
+- **HDL Tools**: Icarus Verilog (iverilog), Yosys, BAMBU HLS
 
 ## License
 
