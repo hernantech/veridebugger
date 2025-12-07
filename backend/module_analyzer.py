@@ -107,8 +107,10 @@ def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
 
     module_match = None
     for pattern in patterns:
-        module_match = re.search(pattern, verilog_code, re.DOTALL)
-        if module_match:
+        # Find ALL modules and use the LAST one (top-level in BAMBU output)
+        matches = list(re.finditer(pattern, verilog_code, re.DOTALL))
+        if matches:
+            module_match = matches[-1]  # Last module is typically the top-level
             break
 
     if not module_match:
@@ -117,9 +119,17 @@ def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
     module_name = module_match.group(1)
     interface = ModuleInterface(name=module_name)
 
+    # Extract just this module's code (from module declaration to endmodule)
+    module_start = module_match.start()
+    endmodule_match = re.search(r'\bendmodule\b', verilog_code[module_start:])
+    if endmodule_match:
+        module_code = verilog_code[module_start:module_start + endmodule_match.end()]
+    else:
+        module_code = verilog_code[module_start:]
+
     # Extract parameters
     param_pattern = r'parameter\s+(?:\[\d+:\d+\]\s*)?(\w+)\s*=\s*([^,;]+)'
-    for match in re.finditer(param_pattern, verilog_code):
+    for match in re.finditer(param_pattern, module_code):
         interface.parameters.append(Parameter(
             name=match.group(1),
             default_value=match.group(2).strip()
@@ -128,7 +138,7 @@ def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
     # Extract localparams (often FSM states)
     localparam_pattern = r'localparam\s+(?:\[\d+:\d+\]\s*)?(\w+)\s*=\s*([^,;]+)'
     localparams = {}
-    for match in re.finditer(localparam_pattern, verilog_code):
+    for match in re.finditer(localparam_pattern, module_code):
         localparams[match.group(1)] = match.group(2).strip()
 
     # Extract port declarations - handle multiple styles
@@ -200,7 +210,7 @@ def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
     # input clk; input [7:0] data;
     if not interface.ports:
         body_pattern = r'(input|output|inout)\s*(wire|reg)?\s*(signed)?\s*(?:\[(\d+):(\d+)\])?\s*([\w,\s]+);'
-        for match in re.finditer(body_pattern, verilog_code):
+        for match in re.finditer(body_pattern, module_code):
             direction, _, signed, msb, lsb, names = match.groups()
 
             width = 1
@@ -218,7 +228,7 @@ def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
                     ))
 
     # Detect FSM
-    interface.fsm = detect_fsm(verilog_code, localparams)
+    interface.fsm = detect_fsm(module_code, localparams)
 
     return interface
 
