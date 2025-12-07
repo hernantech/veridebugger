@@ -1,5 +1,7 @@
 # VeriDebug - AI-Powered Verilog Debugger & Optimizer
 
+**Live Demo: [veridebugger.vercel.app](https://veridebugger.vercel.app/)**
+
 An AI agent that iteratively debugs, tests, and optimizes Verilog/HDL code using Gemini and LangGraph. Supports direct Verilog input or C-to-Verilog conversion via BAMBU HLS.
 
 ## Why VeriDebug?
