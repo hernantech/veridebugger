@@ -2,6 +2,56 @@
 
 An AI agent that iteratively debugs, tests, and optimizes Verilog/HDL code using Gemini and LangGraph. Supports direct Verilog input or C-to-Verilog conversion via BAMBU HLS.
 
+## Why VeriDebug?
+
+**FPGA development is painful.** Synthesis can take 30+ minutes, error messages are cryptic, and LUT optimization requires deep expertise. The traditional workflow is:
+
+```
+write HDL → wait for synthesis → get cryptic error → guess at fix → repeat
+```
+
+This cycle is slow, frustrating, and expensive.
+
+### The Problem: LLMs Write Broken HDL
+
+Large language models can generate Verilog, but they make mistakes: undeclared signals, bit-width mismatches, timing issues, blocking vs non-blocking confusion. Raw LLM output rarely compiles on the first try, let alone simulates correctly.
+
+### The Solution: An Agent That Debugs Its Own Mistakes
+
+VeriDebug wraps LLM generation in an agentic loop with **structured error feedback**:
+
+```
+write HDL → compile fails → parse error → fix → compile succeeds →
+simulate fails → analyze VCD → fix → simulate passes →
+synthesize → too many LUTs → optimize → repeat
+```
+
+The key innovation is **turning cryptic tool output into LLM-friendly feedback**:
+
+```python
+# Instead of raw iverilog output:
+"matmul.v:47: error: Unable to bind wire/reg/memory `result_reg[31:0]'"
+
+# The agent gets structured feedback:
+{
+    "line": 47,
+    "type": "binding",
+    "message": "Undeclared identifier 'result_reg'",
+    "hint": "Declare 'reg [31:0] result_reg' or check spelling"
+}
+```
+
+### What Makes This Work
+
+1. **Structured error parsing**: Compilation errors, simulation failures, and synthesis results are parsed into machine-readable formats with contextual hints
+2. **VCD waveform analysis**: When simulation fails, the agent traces signals backward through time to find the root cause—not just "test failed" but "signal X diverged at cycle 12 because Y was 0 when it should have been 1"
+3. **Goal-aware routing**: Different stopping conditions for different use cases (just compile, verify correctness, or optimize for LUTs)
+4. **Iterative refinement**: The agent makes targeted edits (not full rewrites), preserving working code while fixing broken parts
+
+### The Result
+
+An agent that can take buggy Verilog, fix compilation errors, debug simulation failures using waveform analysis, and iteratively reduce LUT count—all without human intervention.
+
 ## What It Does
 
 VeriDebug uses an AI agent to automatically:
