@@ -336,7 +336,8 @@ def convert_c_to_verilog(code: str, top_function: str = "main") -> ConvertResult
                 "bambu",
                 str(c_file),
                 f"--top-fname={top_function}",
-                "-v0"
+                "-v0",
+                "--std=c99"  # Enable C99 for loop declarations
             ],
             capture_output=True,
             text=True,
