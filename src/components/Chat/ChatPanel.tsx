@@ -23,16 +23,55 @@ import './ChatPanel.css';
 
 const ChatPanel = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { messages, clearMessages } = useChatStore();
+  const lastIterationRef = useRef<number>(-1);
+  const lastStatusRef = useRef<string | null>(null);
+  const { messages, clearMessages, addMessage } = useChatStore();
   const { currentRun } = useOptimizationAgentStore();
   const { waveform } = useWaveformStore();
 
-  // Subscribe to optimization updates and add to chat
+  // Add reasoning messages to chat history when iteration changes
   useEffect(() => {
-    if (currentRun && currentRun.agentReasoning) {
-      // The store already handles updates via addAgentUpdate
+    if (!currentRun) {
+      lastIterationRef.current = -1;
+      lastStatusRef.current = null;
+      return;
     }
-  }, [currentRun?.agentReasoning, currentRun?.iteration]);
+
+    // Add message when reasoning changes on a new iteration
+    if (currentRun.agentReasoning && currentRun.iteration > lastIterationRef.current) {
+      addMessage({
+        role: 'assistant',
+        content: currentRun.agentReasoning,
+        phase: currentRun.status,
+        iteration: currentRun.iteration,
+      });
+      lastIterationRef.current = currentRun.iteration;
+    }
+
+    // Add completion/error message when status changes to final state
+    if (currentRun.status !== lastStatusRef.current) {
+      if (currentRun.status === 'completed' && lastStatusRef.current === 'running') {
+        const reduction = currentRun.lutHistory.length > 1
+          ? Math.round(((currentRun.lutHistory[0] - currentRun.lutHistory[currentRun.lutHistory.length - 1]) / currentRun.lutHistory[0]) * 100)
+          : 0;
+        addMessage({
+          role: 'system',
+          content: `✓ Optimization completed! ${reduction > 0 ? `Achieved ${reduction}% LUT reduction.` : ''} Final: ${currentRun.lutCount} LUTs`,
+        });
+      } else if (currentRun.status === 'failed' && lastStatusRef.current === 'running') {
+        addMessage({
+          role: 'system',
+          content: `✗ Optimization failed: ${currentRun.error || 'Unknown error'}`,
+        });
+      } else if (currentRun.status === 'running' && lastStatusRef.current !== 'running') {
+        addMessage({
+          role: 'system',
+          content: `Starting ${currentRun.mode === 'testgen' ? 'testbench generation' : 'optimization'} run...`,
+        });
+      }
+      lastStatusRef.current = currentRun.status;
+    }
+  }, [currentRun?.iteration, currentRun?.agentReasoning, currentRun?.status, addMessage]);
 
   // Auto-scroll to bottom
   useEffect(() => {
