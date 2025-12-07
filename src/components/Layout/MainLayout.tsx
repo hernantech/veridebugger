@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { CircuitVisualization } from '../Circuit';
 import { SimulationControls, WaveformView, LUTTable, OptimizationAgentPanel } from '../Simulation';
 import { ChatPanel } from '../Chat';
+import { CodePortal } from '../CodePortal';
 import { useOptimizationStore, useCurrentOptimizationRun } from '../../store';
 import {
   PanelLeftClose,
@@ -14,6 +15,7 @@ import {
   MessageSquare,
   BarChart3,
   Zap,
+  Upload,
 } from 'lucide-react';
 import './MainLayout.css';
 
@@ -24,6 +26,7 @@ const MainLayout = () => {
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [bottomExpanded, setBottomExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>('waveform');
+  const [codePortalOpen, setCodePortalOpen] = useState(false);
   const { fetchStats } = useOptimizationStore();
   const currentRun = useCurrentOptimizationRun();
 
@@ -55,6 +58,15 @@ const MainLayout = () => {
             <span>FPGA Transformer Debugger</span>
           </div>
         </div>
+        <div className="main-layout__header-actions">
+          <button
+            className="main-layout__upload-btn"
+            onClick={() => setCodePortalOpen(true)}
+          >
+            <Upload size={16} />
+            <span>Upload Code</span>
+          </button>
+        </div>
         <div className="main-layout__header-stats">
           <div className="main-layout__header-stat">
             <Activity size={14} />
@@ -66,6 +78,9 @@ const MainLayout = () => {
           </div>
         </div>
       </header>
+
+      {/* Code Portal Modal */}
+      <CodePortal isOpen={codePortalOpen} onClose={() => setCodePortalOpen(false)} />
 
       {/* Main content area */}
       <div className="main-layout__content">
