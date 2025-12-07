@@ -1,9 +1,9 @@
 import { useState, useCallback, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { CircuitVisualization } from '../Circuit';
 import { SimulationControls, WaveformView, LUTTable, OptimizationAgentPanel } from '../Simulation';
 import { ChatPanel } from '../Chat';
-import { useOptimizationStore, useCurrentOptimizationRun } from '../../store';
+import { useCurrentOptimizationRun, useHealthStore } from '../../store';
 import {
   PanelLeftClose,
   PanelRightClose,
@@ -14,6 +14,11 @@ import {
   MessageSquare,
   BarChart3,
   Zap,
+  ChevronUp,
+  ChevronDown,
+  GitBranch,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import './MainLayout.css';
 
@@ -23,14 +28,15 @@ const MainLayout = () => {
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [bottomExpanded, setBottomExpanded] = useState(false);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('waveform');
-  const { fetchStats } = useOptimizationStore();
+  const [circuitMinimized, setCircuitMinimized] = useState(false);
+  const [activeTab, setActiveTab] = useState<ActiveTab>('agent');
   const currentRun = useCurrentOptimizationRun();
+  const { isConnected, checkHealth } = useHealthStore();
 
-  // Fetch optimization stats on mount
+  // Check backend health on mount
   useEffect(() => {
-    fetchStats();
-  }, [fetchStats]);
+    checkHealth();
+  }, [checkHealth]);
 
   const toggleLeftPanel = useCallback(() => {
     setLeftPanelCollapsed(prev => !prev);
@@ -42,6 +48,10 @@ const MainLayout = () => {
 
   const toggleBottomExpanded = useCallback(() => {
     setBottomExpanded(prev => !prev);
+  }, []);
+
+  const toggleCircuitMinimized = useCallback(() => {
+    setCircuitMinimized(prev => !prev);
   }, []);
 
   return (
@@ -56,14 +66,16 @@ const MainLayout = () => {
           </div>
         </div>
         <div className="main-layout__header-stats">
-          <div className="main-layout__header-stat">
-            <Activity size={14} />
-            <span>200 MHz</span>
+          <div className={`main-layout__header-stat ${isConnected ? 'connected' : 'disconnected'}`}>
+            {isConnected ? <Wifi size={14} /> : <WifiOff size={14} />}
+            <span>{isConnected ? 'Backend Online' : 'Backend Offline'}</span>
           </div>
-          <div className="main-layout__header-stat">
-            <BarChart3 size={14} />
-            <span>198 / 256 LUTs</span>
-          </div>
+          {currentRun && currentRun.lutCount !== null && (
+            <div className="main-layout__header-stat">
+              <BarChart3 size={14} />
+              <span>{currentRun.lutCount} LUTs</span>
+            </div>
+          )}
         </div>
       </header>
 
@@ -103,19 +115,50 @@ const MainLayout = () => {
 
         {/* Center area */}
         <div className="main-layout__center">
-          {/* Circuit visualization */}
+          {/* Circuit visualization - collapsible */}
           <motion.div
-            className="main-layout__circuit"
-            animate={{ height: bottomExpanded ? '40%' : '55%' }}
+            className={`main-layout__circuit ${circuitMinimized ? 'main-layout__circuit--minimized' : ''}`}
+            animate={{
+              height: circuitMinimized ? 44 : (bottomExpanded ? '40%' : '55%')
+            }}
             transition={{ duration: 0.2 }}
           >
-            <CircuitVisualization />
+            {/* Collapse header - always visible */}
+            <div className="main-layout__circuit-header">
+              <div className="main-layout__circuit-title">
+                <GitBranch size={14} />
+                <span>Circuit Topology</span>
+              </div>
+              <button
+                className="main-layout__circuit-toggle"
+                onClick={toggleCircuitMinimized}
+                title={circuitMinimized ? 'Expand circuit view' : 'Minimize circuit view'}
+              >
+                {circuitMinimized ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+              </button>
+            </div>
+            {/* Circuit content - hidden when minimized */}
+            <AnimatePresence>
+              {!circuitMinimized && (
+                <motion.div
+                  className="main-layout__circuit-content"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                >
+                  <CircuitVisualization />
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
 
           {/* Bottom panel - Waveform / LUT Table */}
           <motion.div
             className="main-layout__bottom"
-            animate={{ height: bottomExpanded ? '60%' : '45%' }}
+            animate={{
+              height: circuitMinimized ? 'calc(100% - 52px)' : (bottomExpanded ? '60%' : '45%')
+            }}
             transition={{ duration: 0.2 }}
           >
             <div className="main-layout__bottom-header">

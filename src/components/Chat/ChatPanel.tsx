@@ -1,80 +1,43 @@
-import { useState, useRef, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { useChatStore, useSelectionStore, useCircuitStore } from '../../store';
+/**
+ * ChatPanel - Shows optimization agent reasoning and updates
+ *
+ * Displays real-time updates from the optimization agent,
+ * including reasoning, phase information, and results.
+ */
+
+import { useRef, useEffect } from 'react';
+import { motion } from 'framer-motion';
+import { useChatStore, useOptimizationAgentStore, useWaveformStore } from '../../store';
 import ChatMessage from './ChatMessage';
 import {
-  Send,
   Trash2,
   Sparkles,
-  Loader2,
-  X,
-  Box,
-  Radio,
-  Clock,
+  Cpu,
+  CheckCircle2,
+  XCircle,
+  TrendingDown,
+  Zap,
+  Activity,
 } from 'lucide-react';
 import './ChatPanel.css';
 
 const ChatPanel = () => {
-  const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const { messages, clearMessages } = useChatStore();
+  const { currentRun } = useOptimizationAgentStore();
+  const { waveform } = useWaveformStore();
 
-  const {
-    messages,
-    isLoading,
-    isStreaming,
-    streamingContent,
-    fetchHistory,
-    sendMessage,
-    clearHistory,
-  } = useChatStore();
-
-  const { selectedNodeId, selectedSignalId, getContext, clearSelection } = useSelectionStore();
-  const { region } = useCircuitStore();
-
-  // Fetch chat history on mount
+  // Subscribe to optimization updates and add to chat
   useEffect(() => {
-    fetchHistory();
-  }, [fetchHistory]);
+    if (currentRun && currentRun.agentReasoning) {
+      // The store already handles updates via addAgentUpdate
+    }
+  }, [currentRun?.agentReasoning, currentRun?.iteration]);
 
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingContent]);
-
-  // Auto-resize textarea
-  useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto';
-      inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 150) + 'px';
-    }
-  }, [input]);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isLoading || isStreaming) return;
-
-    const context = getContext();
-    sendMessage(input.trim(), context);
-    setInput('');
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit(e);
-    }
-  };
-
-  const selectedNode = region?.nodes.find(n => n.id === selectedNodeId);
-
-  // Quick prompts
-  const quickPrompts = [
-    { icon: '🔍', text: 'Analyze selected node', requiresSelection: true },
-    { icon: '⚡', text: 'Find critical path bottlenecks', requiresSelection: false },
-    { icon: '📉', text: 'Suggest LUT optimizations', requiresSelection: false },
-    { icon: '🔧', text: 'Explain this circuit region', requiresSelection: false },
-  ];
+  }, [messages]);
 
   return (
     <div className="chat-panel">
@@ -82,51 +45,53 @@ const ChatPanel = () => {
       <div className="chat-panel__header">
         <div className="chat-panel__title">
           <Sparkles size={16} className="chat-panel__icon" />
-          <h2>Vibe Debugger</h2>
+          <h2>Agent Reasoning</h2>
         </div>
         <div className="chat-panel__actions">
           <button
             className="chat-panel__action"
-            onClick={clearHistory}
-            title="Clear conversation"
+            onClick={clearMessages}
+            title="Clear messages"
           >
             <Trash2 size={14} />
           </button>
         </div>
       </div>
 
-      {/* Context bar */}
-      <AnimatePresence>
-        {(selectedNodeId || selectedSignalId) && (
-          <motion.div
-            className="chat-panel__context"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-          >
-            <span className="chat-panel__context-label">Context:</span>
-            {selectedNode && (
-              <div className="chat-panel__context-item">
-                <Box size={12} />
-                <span>{selectedNode.name}</span>
-                <span className="chat-panel__context-type">{selectedNode.type}</span>
-              </div>
+      {/* Current Run Status */}
+      {currentRun && (
+        <div className="chat-panel__run-status">
+          <div className="chat-panel__run-info">
+            <span className={`chat-panel__run-badge chat-panel__run-badge--${currentRun.status}`}>
+              {currentRun.status === 'running' && <Zap size={12} className="spinning" />}
+              {currentRun.status === 'completed' && <CheckCircle2 size={12} />}
+              {currentRun.status === 'failed' && <XCircle size={12} />}
+              {currentRun.status}
+            </span>
+            <span className="chat-panel__run-iter">
+              <Cpu size={12} />
+              Iteration {currentRun.iteration}
+            </span>
+            {currentRun.lutCount !== null && (
+              <span className="chat-panel__run-lut">
+                <TrendingDown size={12} />
+                {currentRun.lutCount} LUTs
+              </span>
             )}
-            {selectedSignalId && (
-              <div className="chat-panel__context-item">
-                <Radio size={12} />
-                <span>{selectedSignalId}</span>
-              </div>
-            )}
-            <button
-              className="chat-panel__context-clear"
-              onClick={clearSelection}
-            >
-              <X size={12} />
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </div>
+        </div>
+      )}
+
+      {/* VCD Status */}
+      {waveform.signals.length > 0 && (
+        <div className="chat-panel__vcd-status">
+          <Activity size={12} />
+          <span>VCD: {waveform.signals.length} signals captured</span>
+          <span className={`chat-panel__vcd-result ${waveform.simPassed ? 'passed' : 'failed'}`}>
+            {waveform.simPassed ? 'PASS' : 'FAIL'}
+          </span>
+        </div>
+      )}
 
       {/* Messages */}
       <div className="chat-panel__messages">
@@ -134,94 +99,75 @@ const ChatPanel = () => {
           <ChatMessage key={message.id} message={message} />
         ))}
 
-        {/* Streaming message */}
-        {isStreaming && (
-          <ChatMessage
-            message={{
-              id: 'streaming',
-              role: 'assistant',
-              content: '',
-              timestamp: new Date(),
-            }}
-            isStreaming
-            streamingContent={streamingContent}
-          />
-        )}
-
-        {/* Loading indicator */}
-        {isLoading && !isStreaming && (
+        {/* Current reasoning */}
+        {currentRun && currentRun.status === 'running' && currentRun.agentReasoning && (
           <motion.div
-            className="chat-panel__loading"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
+            className="chat-panel__current-reasoning"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
           >
-            <Loader2 size={16} className="chat-panel__loading-icon" />
-            <span>Analyzing...</span>
+            <div className="chat-panel__reasoning-header">
+              <Zap size={14} />
+              <span>Current Analysis</span>
+            </div>
+            <p>{currentRun.agentReasoning}</p>
           </motion.div>
         )}
 
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Quick prompts */}
-      {messages.length <= 1 && (
-        <div className="chat-panel__quick-prompts">
-          {quickPrompts.map((prompt, i) => (
-            <motion.button
-              key={i}
-              className="chat-panel__quick-prompt"
-              onClick={() => {
-                if (!prompt.requiresSelection || selectedNodeId) {
-                  setInput(prompt.text);
-                  inputRef.current?.focus();
-                }
-              }}
-              disabled={prompt.requiresSelection && !selectedNodeId}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              <span>{prompt.icon}</span>
-              <span>{prompt.text}</span>
-            </motion.button>
-          ))}
+      {/* LUT History Chart */}
+      {currentRun && currentRun.lutHistory.length > 1 && (
+        <div className="chat-panel__lut-chart">
+          <div className="chat-panel__lut-header">
+            <TrendingDown size={14} />
+            <span>LUT Optimization Progress</span>
+          </div>
+          <div className="chat-panel__lut-bars">
+            {currentRun.lutHistory.map((lut, i) => {
+              const maxLut = Math.max(...currentRun.lutHistory);
+              const height = (lut / maxLut) * 100;
+              const isLatest = i === currentRun.lutHistory.length - 1;
+              return (
+                <div
+                  key={i}
+                  className={`chat-panel__lut-bar ${isLatest ? 'latest' : ''}`}
+                  style={{ height: `${height}%` }}
+                  title={`Iteration ${i}: ${lut} LUTs`}
+                >
+                  <span className="chat-panel__lut-value">{lut}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="chat-panel__lut-reduction">
+            {currentRun.lutHistory.length > 1 && (
+              <>
+                <span>Reduction:</span>
+                <strong>
+                  {Math.round(
+                    ((currentRun.lutHistory[0] - currentRun.lutHistory[currentRun.lutHistory.length - 1]) /
+                      currentRun.lutHistory[0]) *
+                      100
+                  )}%
+                </strong>
+              </>
+            )}
+          </div>
         </div>
       )}
 
-      {/* Input area */}
-      <form className="chat-panel__input-area" onSubmit={handleSubmit}>
-        <div className="chat-panel__input-wrapper">
-          <textarea
-            ref={inputRef}
-            className="chat-panel__input"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask about your circuit, LUT usage, or optimization strategies..."
-            rows={1}
-            disabled={isLoading || isStreaming}
-          />
-          <motion.button
-            type="submit"
-            className="chat-panel__send"
-            disabled={!input.trim() || isLoading || isStreaming}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-          >
-            {isLoading || isStreaming ? (
-              <Loader2 size={18} className="chat-panel__send-loading" />
-            ) : (
-              <Send size={18} />
-            )}
-          </motion.button>
+      {/* Empty state */}
+      {!currentRun && messages.length <= 1 && (
+        <div className="chat-panel__empty">
+          <Sparkles size={32} />
+          <h3>AI Agent Ready</h3>
+          <p>Start an optimization run to see real-time reasoning and progress updates.</p>
         </div>
-        <div className="chat-panel__input-hint">
-          <Clock size={10} />
-          <span>Press Enter to send, Shift+Enter for new line</span>
-        </div>
-      </form>
+      )}
     </div>
   );
 };
 
 export default ChatPanel;
-

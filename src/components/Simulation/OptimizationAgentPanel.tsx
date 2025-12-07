@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useOptimizationAgentStore } from '../../store';
+import CodeEditor from './CodeEditor';
+import type { CodeLanguage, OptimizationGoal } from '../../store/optimizationAgentStore';
 import {
   Play,
   Square,
@@ -17,14 +19,16 @@ import {
   Wand2,
   ChevronDown,
   ChevronUp,
+  ArrowRight,
 } from 'lucide-react';
 import './OptimizationAgentPanel.css';
+import './CodeEditor.css';
 
 type TabMode = 'optimize' | 'testgen';
 
 const OptimizationAgentPanel = () => {
   const [activeTab, setActiveTab] = useState<TabMode>('optimize');
-  const [showDesignCode, setShowDesignCode] = useState(false);
+  const [showDesignCode, setShowDesignCode] = useState(true);
   const [showTestbench, setShowTestbench] = useState(false);
 
   const {
@@ -35,9 +39,18 @@ const OptimizationAgentPanel = () => {
     designCode,
     testbenchCode,
     maxIterations,
+    codeLanguage,
+    goal,
+    isConverting,
+    conversionMessage,
+    conversionSuccess,
     setDesignCode,
     setTestbenchCode,
     setMaxIterations,
+    setCodeLanguage,
+    setGoal,
+    convertCToVerilog,
+    clearConversionMessage,
     startOptimization,
     startTestGen,
     generateTestbench,
@@ -53,6 +66,23 @@ const OptimizationAgentPanel = () => {
       startOptimization();
     } else {
       startTestGen();
+    }
+  };
+
+  const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setCodeLanguage(e.target.value as CodeLanguage);
+  };
+
+  const handleGoalChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setGoal(e.target.value as OptimizationGoal);
+  };
+
+  const getGoalDescription = (g: OptimizationGoal): string => {
+    switch (g) {
+      case 'compile': return 'Only compile - fix syntax errors';
+      case 'verify': return 'Compile + simulate until tests pass';
+      case 'optimize': return 'Full optimization - reduce LUT count';
+      default: return '';
     }
   };
 
@@ -132,12 +162,65 @@ const OptimizationAgentPanel = () => {
                   exit={{ height: 0, opacity: 0 }}
                   className="optimization-agent-panel__code-wrapper"
                 >
-                  <textarea
-                    className="optimization-agent-panel__code"
+                  {/* Language selector and convert button */}
+                  <div className="code-section-header">
+                    <div className="code-section-header__left">
+                      <span className="code-section-header__title">Language:</span>
+                      <select
+                        className="language-selector__dropdown"
+                        value={codeLanguage}
+                        onChange={handleLanguageChange}
+                      >
+                        <option value="verilog">Verilog</option>
+                        <option value="c">C</option>
+                      </select>
+                    </div>
+                    <div className="code-section-header__right">
+                      {codeLanguage === 'c' && (
+                        <button
+                          className="convert-btn"
+                          onClick={convertCToVerilog}
+                          disabled={isConverting}
+                        >
+                          {isConverting ? (
+                            <>
+                              <Loader2 size={12} className="spinning" />
+                              Converting...
+                            </>
+                          ) : (
+                            <>
+                              <ArrowRight size={12} />
+                              Convert to Verilog
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Monaco Editor */}
+                  <CodeEditor
                     value={designCode}
-                    onChange={(e) => setDesignCode(e.target.value)}
-                    spellCheck={false}
+                    onChange={setDesignCode}
+                    language={codeLanguage}
+                    height="200px"
                   />
+
+                  {/* Conversion message */}
+                  <AnimatePresence>
+                    {conversionMessage && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className={`conversion-message ${conversionSuccess ? 'conversion-message--success' : 'conversion-message--error'}`}
+                      >
+                        {conversionSuccess ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                        <span>{conversionMessage}</span>
+                        <button onClick={clearConversionMessage}>Dismiss</button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -175,11 +258,11 @@ const OptimizationAgentPanel = () => {
                         Auto-generate
                       </button>
                     </div>
-                    <textarea
-                      className="optimization-agent-panel__code"
+                    <CodeEditor
                       value={testbenchCode}
-                      onChange={(e) => setTestbenchCode(e.target.value)}
-                      spellCheck={false}
+                      onChange={setTestbenchCode}
+                      language="verilog"
+                      height="180px"
                     />
                   </motion.div>
                 )}
@@ -197,6 +280,25 @@ const OptimizationAgentPanel = () => {
               max={20}
             />
           </div>
+
+          {/* Goal Selector */}
+          {activeTab === 'optimize' && (
+            <div className="optimization-agent-panel__field optimization-agent-panel__field--full">
+              <label>Optimization Goal</label>
+              <select
+                value={goal}
+                onChange={handleGoalChange}
+                className="optimization-agent-panel__goal-select"
+              >
+                <option value="compile">Compile Only</option>
+                <option value="verify">Verify (Pass Tests)</option>
+                <option value="optimize">Optimize (Reduce LUTs)</option>
+              </select>
+              <span className="optimization-agent-panel__goal-description">
+                {getGoalDescription(goal)}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
@@ -316,9 +418,10 @@ const OptimizationAgentPanel = () => {
             <motion.button
               className="optimization-agent-panel__btn optimization-agent-panel__btn--primary"
               onClick={handleStart}
-              disabled={isStarting}
+              disabled={isStarting || codeLanguage === 'c'}
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
+              title={codeLanguage === 'c' ? 'Convert C to Verilog first' : undefined}
             >
               {isStarting ? (
                 <>
@@ -356,6 +459,13 @@ const OptimizationAgentPanel = () => {
           </motion.button>
         )}
       </div>
+
+      {/* Hint for C code */}
+      {codeLanguage === 'c' && !currentRun && (
+        <div className="optimization-agent-panel__hint">
+          <span>Convert your C code to Verilog before optimization</span>
+        </div>
+      )}
     </div>
   );
 };

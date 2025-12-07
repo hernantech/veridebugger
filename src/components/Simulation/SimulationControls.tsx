@@ -1,223 +1,184 @@
+/**
+ * SimulationControls - VCD Simulation Controls
+ *
+ * Controls for running simulations and capturing VCD waveforms.
+ * Connected to the real FastAPI backend.
+ */
+
 import { useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { useSimulationStore, useTransformerStore } from '../../store';
+import { motion } from 'framer-motion';
+import {
+  useWaveformStore,
+  useHealthStore,
+  useOptimizationAgentStore,
+} from '../../store';
 import {
   Play,
-  Pause,
-  SkipForward,
   RotateCcw,
-  Settings,
+  Wifi,
+  WifiOff,
   Cpu,
   Clock,
   Activity,
-  Layers,
+  Loader2,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
 import './SimulationControls.css';
 
 const SimulationControls = () => {
-  const {
-    state: simState,
-    config,
-    isLoading,
-    fetchState,
-    start,
-    pause,
-    resume,
-    step,
-    reset,
-    updateConfig,
-  } = useSimulationStore();
+  const { waveform, runSimulationWithVcd, clearWaveform } = useWaveformStore();
+  const { isConnected, lastCheck, checkHealth, error: healthError } = useHealthStore();
+  const { designCode, testbenchCode, currentRun } = useOptimizationAgentStore();
 
-  const { configs, selectedConfigId, fetchConfigs, selectConfig } = useTransformerStore();
-
+  // Check backend health on mount and periodically
   useEffect(() => {
-    fetchState();
-    fetchConfigs();
-  }, [fetchState, fetchConfigs]);
+    checkHealth();
+    const interval = setInterval(checkHealth, 30000); // Check every 30s
+    return () => clearInterval(interval);
+  }, [checkHealth]);
 
-  const handlePlayPause = () => {
-    if (!simState) return;
-    
-    if (simState.status === 'idle' || simState.status === 'completed') {
-      start();
-    } else if (simState.status === 'running') {
-      pause();
-    } else if (simState.status === 'paused') {
-      resume();
+  const handleRunSimulation = () => {
+    if (designCode && testbenchCode) {
+      runSimulationWithVcd(designCode, testbenchCode);
     }
   };
 
-  const isRunning = simState?.status === 'running';
-  const isIdle = simState?.status === 'idle' || simState?.status === 'completed';
+  const handleReset = () => {
+    clearWaveform();
+  };
 
-  const progress = simState 
-    ? (simState.currentTimestep / simState.totalTimesteps) * 100 
-    : 0;
+  const isRunning = waveform.isLoading;
+  const hasWaveform = waveform.signals.length > 0;
 
   return (
     <div className="simulation-controls">
-      {/* Status indicator */}
+      {/* Backend Connection Status */}
       <div className="simulation-controls__status">
         <motion.div
-          className={`simulation-controls__status-dot simulation-controls__status-dot--${simState?.status || 'idle'}`}
-          animate={isRunning ? { scale: [1, 1.2, 1] } : {}}
-          transition={{ duration: 0.8, repeat: Infinity }}
+          className={`simulation-controls__status-dot simulation-controls__status-dot--${isConnected ? 'connected' : 'disconnected'}`}
+          animate={isConnected ? { scale: [1, 1.2, 1] } : {}}
+          transition={{ duration: 2, repeat: Infinity }}
         />
         <span className="simulation-controls__status-text">
-          {simState?.status?.toUpperCase() || 'IDLE'}
+          {isConnected ? (
+            <>
+              <Wifi size={12} />
+              Backend Connected
+            </>
+          ) : (
+            <>
+              <WifiOff size={12} />
+              Backend Offline
+            </>
+          )}
         </span>
       </div>
+
+      {healthError && (
+        <div className="simulation-controls__error">
+          <XCircle size={12} />
+          <span>{healthError}</span>
+        </div>
+      )}
 
       {/* Main controls */}
       <div className="simulation-controls__buttons">
         <motion.button
           className="simulation-controls__btn simulation-controls__btn--primary"
-          onClick={handlePlayPause}
-          disabled={isLoading}
+          onClick={handleRunSimulation}
+          disabled={isRunning || !isConnected || !designCode || !testbenchCode}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
+          title={!designCode || !testbenchCode ? 'Enter design and testbench code first' : 'Run simulation'}
         >
-          <AnimatePresence mode="wait">
-            {isRunning ? (
-              <motion.div
-                key="pause"
-                initial={{ opacity: 0, rotate: -90 }}
-                animate={{ opacity: 1, rotate: 0 }}
-                exit={{ opacity: 0, rotate: 90 }}
-              >
-                <Pause size={18} />
-              </motion.div>
-            ) : (
-              <motion.div
-                key="play"
-                initial={{ opacity: 0, rotate: -90 }}
-                animate={{ opacity: 1, rotate: 0 }}
-                exit={{ opacity: 0, rotate: 90 }}
-              >
-                <Play size={18} />
-              </motion.div>
-            )}
-          </AnimatePresence>
-          {isIdle ? 'Start' : isRunning ? 'Pause' : 'Resume'}
+          {isRunning ? (
+            <>
+              <Loader2 size={18} className="spinning" />
+              Running...
+            </>
+          ) : (
+            <>
+              <Play size={18} />
+              Run VCD Sim
+            </>
+          )}
         </motion.button>
 
         <motion.button
           className="simulation-controls__btn"
-          onClick={step}
-          disabled={isLoading || isRunning}
+          onClick={handleReset}
+          disabled={isRunning || !hasWaveform}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
-          title="Single Step"
-        >
-          <SkipForward size={16} />
-          Step
-        </motion.button>
-
-        <motion.button
-          className="simulation-controls__btn"
-          onClick={reset}
-          disabled={isLoading}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          title="Reset Simulation"
+          title="Clear waveform data"
         >
           <RotateCcw size={16} />
-          Reset
+          Clear
         </motion.button>
       </div>
 
-      {/* Progress bar */}
-      <div className="simulation-controls__progress">
-        <div className="simulation-controls__progress-bar">
-          <motion.div
-            className="simulation-controls__progress-fill"
-            initial={{ width: 0 }}
-            animate={{ width: `${progress}%` }}
-            transition={{ duration: 0.2 }}
-          />
+      {/* Simulation Status */}
+      {hasWaveform && (
+        <div className="simulation-controls__result">
+          <div className={`simulation-controls__result-status ${waveform.simPassed ? 'passed' : 'failed'}`}>
+            {waveform.simPassed ? (
+              <>
+                <CheckCircle2 size={14} />
+                Simulation Passed
+              </>
+            ) : (
+              <>
+                <XCircle size={14} />
+                Simulation Failed
+              </>
+            )}
+          </div>
+          <div className="simulation-controls__result-info">
+            <span>
+              <Activity size={12} />
+              {waveform.signals.length} signals
+            </span>
+            <span>
+              <Clock size={12} />
+              {waveform.maxTime}ns duration
+            </span>
+          </div>
         </div>
-        <div className="simulation-controls__progress-info">
-          <span>
-            <Clock size={12} />
-            {simState?.currentTimestep || 0} / {simState?.totalTimesteps || 100}
+      )}
+
+      {/* Current Optimization Run Info */}
+      {currentRun && (
+        <div className="simulation-controls__run-info">
+          <div className="simulation-controls__run-header">
+            <Cpu size={14} />
+            <span>Active Optimization</span>
+          </div>
+          <div className="simulation-controls__run-details">
+            <span className={`simulation-controls__run-status simulation-controls__run-status--${currentRun.status}`}>
+              {currentRun.status}
+            </span>
+            <span>Iteration {currentRun.iteration}</span>
+            {currentRun.lutCount !== null && (
+              <span>{currentRun.lutCount} LUTs</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Quick Stats */}
+      <div className="simulation-controls__stats">
+        <div className="simulation-controls__stat">
+          <span className="simulation-controls__stat-label">Last Check</span>
+          <span className="simulation-controls__stat-value">
+            {lastCheck ? new Date(lastCheck).toLocaleTimeString() : 'Never'}
           </span>
-          <span>
-            <Activity size={12} />
-            {simState?.clockFrequency || 200} MHz
+        </div>
+        <div className="simulation-controls__stat">
+          <span className="simulation-controls__stat-label">VCD Path</span>
+          <span className="simulation-controls__stat-value">
+            {waveform.vcdPath ? waveform.vcdPath.split('/').pop() : 'None'}
           </span>
-        </div>
-      </div>
-
-      {/* Configuration section */}
-      <div className="simulation-controls__config">
-        <div className="simulation-controls__config-header">
-          <Settings size={14} />
-          <span>Configuration</span>
-        </div>
-
-        <div className="simulation-controls__config-grid">
-          {/* Transformer model selection */}
-          <div className="simulation-controls__field">
-            <label>
-              <Cpu size={12} />
-              Model
-            </label>
-            <select
-              value={selectedConfigId || ''}
-              onChange={(e) => selectConfig(e.target.value)}
-              disabled={isRunning}
-            >
-              {configs.map((cfg) => (
-                <option key={cfg.id} value={cfg.id}>
-                  {cfg.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Precision */}
-          <div className="simulation-controls__field">
-            <label>
-              <Layers size={12} />
-              Precision
-            </label>
-            <select
-              value={config.precision}
-              onChange={(e) => updateConfig({ precision: e.target.value as typeof config.precision })}
-              disabled={isRunning}
-            >
-              <option value="fp32">FP32</option>
-              <option value="fp16">FP16</option>
-              <option value="int8">INT8</option>
-              <option value="int4">INT4</option>
-            </select>
-          </div>
-
-          {/* Sequence length */}
-          <div className="simulation-controls__field">
-            <label>Seq Length</label>
-            <input
-              type="number"
-              value={config.inputSequenceLength}
-              onChange={(e) => updateConfig({ inputSequenceLength: parseInt(e.target.value) || 64 })}
-              disabled={isRunning}
-              min={1}
-              max={512}
-            />
-          </div>
-
-          {/* Pipeline depth */}
-          <div className="simulation-controls__field">
-            <label>Pipeline</label>
-            <input
-              type="number"
-              value={config.pipelineDepth}
-              onChange={(e) => updateConfig({ pipelineDepth: parseInt(e.target.value) || 4 })}
-              disabled={isRunning}
-              min={1}
-              max={16}
-            />
-          </div>
         </div>
       </div>
     </div>
@@ -225,4 +186,3 @@ const SimulationControls = () => {
 };
 
 export default SimulationControls;
-

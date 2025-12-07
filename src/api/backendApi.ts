@@ -25,6 +25,7 @@ export interface OptimizeRequest {
   design_code: string;
   testbench_code: string;
   max_iterations?: number;
+  goal?: 'compile' | 'verify' | 'optimize';
 }
 
 export interface TestGenRequest {
@@ -131,6 +132,7 @@ export const backendApi = {
         design_code: request.design_code,
         testbench_code: request.testbench_code,
         max_iterations: request.max_iterations ?? 10,
+        goal: request.goal ?? 'optimize',
       }),
     });
     if (!response.ok) {

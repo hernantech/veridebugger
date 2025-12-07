@@ -121,6 +121,44 @@
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
+.optimization-agent-panel__field select {
+  padding: 10px 12px;
+  background: white;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: #0f172a;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.optimization-agent-panel__field select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.optimization-agent-panel__field--full {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(226, 232, 240, 0.5);
+}
+
+.optimization-agent-panel__goal-select {
+  background: white url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e") right 10px center/16px no-repeat;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  padding-right: 36px;
+}
+
+.optimization-agent-panel__goal-description {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 4px;
+  font-style: italic;
+}
+
 /* Code sections */
 .optimization-agent-panel__code-section {
   display: flex;
@@ -545,6 +583,20 @@
 
 .optimization-agent-panel__btn--danger:hover {
   box-shadow: var(--shadow-md), 0 0 20px rgba(239, 68, 68, 0.3);
+}
+
+/* Hint message */
+.optimization-agent-panel__hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border: 1px solid rgba(253, 230, 138, 0.8);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: #b45309;
+  text-align: center;
 }
 
 /* Spinning animation */

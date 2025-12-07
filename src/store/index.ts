@@ -1,24 +1,12 @@
+/**
+ * Zustand Stores - Connected to Real Backend
+ *
+ * All stores now use the real FastAPI backend at localhost:8080
+ */
+
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
-import type {
-  CircuitRegion,
-  SimulationState,
-  SimulationConfig,
-  TransformerConfig,
-  OptimizationStats,
-  ChatMessage,
-  ChatContext,
-  SelectionState,
-  ViewSettings,
-} from '../types';
-import {
-  circuitApi,
-  simulationApi,
-  transformerApi,
-  optimizationApi,
-  chatApi,
-  mockWebSocket,
-} from '../api/client';
+import { backendApi, type VcdResult, type StreamStep } from '../api/backendApi';
 
 // Re-export the optimization agent store for backend integration
 export {
@@ -30,378 +18,363 @@ export {
   useAgentReasoning,
   useDesignCode,
   useTestbenchCode,
+  useGoal,
+  useCodeLanguage,
+  useConversionState,
+  type OptimizationGoal,
+  type CodeLanguage,
 } from './optimizationAgentStore';
 
 // ============================================
-// Circuit Store
+// Types for VCD-based Waveforms
 // ============================================
 
-interface CircuitStore {
-  region: CircuitRegion | null;
-  isLoading: boolean;
-  error: string | null;
-  fetchCircuit: () => Promise<void>;
-  updateNodePosition: (nodeId: string, position: { x: number; y: number }) => void;
+export interface VcdSignal {
+  name: string;
+  width: number;
+  values: Array<{ time: number; value: string }>;
 }
 
-export const useCircuitStore = create<CircuitStore>((set, get) => ({
-  region: null,
+export interface WaveformState {
+  signals: VcdSignal[];
+  vcdPath: string | null;
+  simPassed: boolean;
+  currentTime: number;
+  maxTime: number;
+  isLoading: boolean;
+  error: string | null;
+}
+
+// ============================================
+// Waveform Store (Real VCD Data)
+// ============================================
+
+interface WaveformStore {
+  waveform: WaveformState;
+
+  // Actions
+  runSimulationWithVcd: (designCode: string, testbenchCode: string) => Promise<void>;
+  setCurrentTime: (time: number) => void;
+  clearWaveform: () => void;
+}
+
+const initialWaveformState: WaveformState = {
+  signals: [],
+  vcdPath: null,
+  simPassed: false,
+  currentTime: 0,
+  maxTime: 0,
   isLoading: false,
   error: null,
+};
 
-  fetchCircuit: async () => {
-    set({ isLoading: true, error: null });
+export const useWaveformStore = create<WaveformStore>((set, get) => ({
+  waveform: initialWaveformState,
+
+  runSimulationWithVcd: async (designCode: string, testbenchCode: string) => {
+    set({ waveform: { ...get().waveform, isLoading: true, error: null } });
+
     try {
-      const region = await circuitApi.getCircuitRegion();
-      set({ region, isLoading: false });
+      const result: VcdResult = await backendApi.runWithVcd({
+        design_code: designCode,
+        testbench_code: testbenchCode,
+      });
+
+      if (result.error) {
+        set({
+          waveform: {
+            ...get().waveform,
+            isLoading: false,
+            error: result.error,
+          },
+        });
+        return;
+      }
+
+      // Calculate max time from signals
+      let maxTime = 0;
+      if (result.signals) {
+        result.signals.forEach((sig) => {
+          sig.values.forEach((v) => {
+            if (v.time > maxTime) maxTime = v.time;
+          });
+        });
+      }
+
+      set({
+        waveform: {
+          signals: result.signals || [],
+          vcdPath: result.vcd_path || null,
+          simPassed: result.success,
+          currentTime: 0,
+          maxTime,
+          isLoading: false,
+          error: null,
+        },
+      });
     } catch (err) {
-      set({ error: (err as Error).message, isLoading: false });
+      set({
+        waveform: {
+          ...get().waveform,
+          isLoading: false,
+          error: (err as Error).message,
+        },
+      });
     }
   },
 
-  updateNodePosition: (nodeId, position) => {
-    const { region } = get();
-    if (!region) return;
+  setCurrentTime: (time: number) => {
+    const { waveform } = get();
+    set({
+      waveform: {
+        ...waveform,
+        currentTime: Math.max(0, Math.min(time, waveform.maxTime)),
+      },
+    });
+  },
 
-    const updatedNodes = region.nodes.map(node =>
-      node.id === nodeId ? { ...node, position } : node
-    );
-    set({ region: { ...region, nodes: updatedNodes } });
-    circuitApi.updateNodePosition(nodeId, position);
+  clearWaveform: () => {
+    set({ waveform: initialWaveformState });
   },
 }));
 
 // ============================================
-// Simulation Store
+// LUT Optimization Stats Store
 // ============================================
 
-interface SimulationStore {
-  state: SimulationState | null;
-  config: SimulationConfig;
-  isLoading: boolean;
-  error: string | null;
-  
-  fetchState: () => Promise<void>;
-  start: () => Promise<void>;
-  pause: () => Promise<void>;
-  resume: () => Promise<void>;
-  step: () => Promise<void>;
-  reset: () => Promise<void>;
-  setTimestep: (timestep: number) => Promise<void>;
-  updateConfig: (updates: Partial<SimulationConfig>) => void;
-  setSimulationState: (state: SimulationState) => void;
+export interface LutStats {
+  originalLuts: number;
+  currentLuts: number;
+  targetLuts: number;
+  history: number[];
+  reasoning: string[];
 }
 
-export const useSimulationStore = create<SimulationStore>((set, get) => ({
-  state: null,
-  config: {
-    modelVariant: 'small',
-    inputSequenceLength: 64,
-    batchSize: 1,
-    precision: 'fp16',
-    pipelineDepth: 4,
-  },
-  isLoading: false,
-  error: null,
-
-  fetchState: async () => {
-    set({ isLoading: true });
-    try {
-      const state = await simulationApi.getState();
-      set({ state, isLoading: false });
-    } catch (err) {
-      set({ error: (err as Error).message, isLoading: false });
-    }
-  },
-
-  start: async () => {
-    set({ isLoading: true });
-    try {
-      const { config } = get();
-      const state = await simulationApi.start(config);
-      set({ state, isLoading: false });
-      mockWebSocket.startSimulationUpdates();
-    } catch (err) {
-      set({ error: (err as Error).message, isLoading: false });
-    }
-  },
-
-  pause: async () => {
-    try {
-      const state = await simulationApi.pause();
-      set({ state });
-      mockWebSocket.stopSimulationUpdates();
-    } catch (err) {
-      set({ error: (err as Error).message });
-    }
-  },
-
-  resume: async () => {
-    try {
-      const state = await simulationApi.resume();
-      set({ state });
-      mockWebSocket.startSimulationUpdates();
-    } catch (err) {
-      set({ error: (err as Error).message });
-    }
-  },
-
-  step: async () => {
-    set({ isLoading: true });
-    try {
-      const state = await simulationApi.step();
-      set({ state, isLoading: false });
-    } catch (err) {
-      set({ error: (err as Error).message, isLoading: false });
-    }
-  },
-
-  reset: async () => {
-    try {
-      mockWebSocket.stopSimulationUpdates();
-      const state = await simulationApi.reset();
-      set({ state });
-    } catch (err) {
-      set({ error: (err as Error).message });
-    }
-  },
-
-  setTimestep: async (timestep) => {
-    try {
-      const state = await simulationApi.setTimestep(timestep);
-      set({ state });
-    } catch (err) {
-      set({ error: (err as Error).message });
-    }
-  },
-
-  updateConfig: (updates) => {
-    const { config } = get();
-    set({ config: { ...config, ...updates } });
-  },
-
-  setSimulationState: (state) => {
-    set({ state });
-  },
-}));
-
-// Subscribe to WebSocket updates
-mockWebSocket.subscribe((state) => {
-  useSimulationStore.getState().setSimulationState(state);
-});
-
-// ============================================
-// Transformer Store
-// ============================================
-
-interface TransformerStore {
-  configs: TransformerConfig[];
-  selectedConfigId: string | null;
+interface LutStatsStore {
+  stats: LutStats | null;
   isLoading: boolean;
   error: string | null;
-  
-  fetchConfigs: () => Promise<void>;
-  selectConfig: (configId: string) => void;
+
+  // Update from optimization run
+  updateFromRun: (step: StreamStep) => void;
+  clearStats: () => void;
 }
 
-export const useTransformerStore = create<TransformerStore>((set) => ({
-  configs: [],
-  selectedConfigId: null,
-  isLoading: false,
-  error: null,
-
-  fetchConfigs: async () => {
-    set({ isLoading: true });
-    try {
-      const configs = await transformerApi.getConfigs();
-      set({ configs, selectedConfigId: configs[0]?.id || null, isLoading: false });
-    } catch (err) {
-      set({ error: (err as Error).message, isLoading: false });
-    }
-  },
-
-  selectConfig: (configId) => {
-    set({ selectedConfigId: configId });
-  },
-}));
-
-// ============================================
-// Optimization Store
-// ============================================
-
-interface OptimizationStore {
-  stats: OptimizationStats | null;
-  isLoading: boolean;
-  isApplying: boolean;
-  error: string | null;
-  
-  fetchStats: () => Promise<void>;
-  applySuggestion: (suggestionId: string) => Promise<void>;
-  revertSuggestion: (suggestionId: string) => Promise<void>;
-  analyzeOptimizations: () => Promise<void>;
-}
-
-export const useOptimizationStore = create<OptimizationStore>((set) => ({
+export const useLutStatsStore = create<LutStatsStore>((set, get) => ({
   stats: null,
   isLoading: false,
-  isApplying: false,
   error: null,
 
-  fetchStats: async () => {
-    set({ isLoading: true });
-    try {
-      const stats = await optimizationApi.getStats();
-      set({ stats, isLoading: false });
-    } catch (err) {
-      set({ error: (err as Error).message, isLoading: false });
-    }
+  updateFromRun: (step: StreamStep) => {
+    const current = get().stats;
+    const lutHistory = step.lut_history || [];
+
+    set({
+      stats: {
+        originalLuts: current?.originalLuts || lutHistory[0] || 0,
+        currentLuts: step.lut_count || lutHistory[lutHistory.length - 1] || 0,
+        targetLuts: current?.targetLuts || Math.floor((lutHistory[0] || 100) * 0.7),
+        history: lutHistory,
+        reasoning: [
+          ...(current?.reasoning || []),
+          ...(step.reasoning ? [step.reasoning] : []),
+        ],
+      },
+    });
   },
 
-  applySuggestion: async (suggestionId) => {
-    set({ isApplying: true });
-    try {
-      const stats = await optimizationApi.applySuggestion(suggestionId);
-      set({ stats, isApplying: false });
-    } catch (err) {
-      set({ error: (err as Error).message, isApplying: false });
-    }
-  },
-
-  revertSuggestion: async (suggestionId) => {
-    set({ isApplying: true });
-    try {
-      const stats = await optimizationApi.revertSuggestion(suggestionId);
-      set({ stats, isApplying: false });
-    } catch (err) {
-      set({ error: (err as Error).message, isApplying: false });
-    }
-  },
-
-  analyzeOptimizations: async () => {
-    set({ isLoading: true });
-    try {
-      const suggestions = await optimizationApi.analyzeOptimizations();
-      set((state) => ({
-        stats: state.stats ? { ...state.stats, suggestions } : null,
-        isLoading: false,
-      }));
-    } catch (err) {
-      set({ error: (err as Error).message, isLoading: false });
-    }
+  clearStats: () => {
+    set({ stats: null, error: null });
   },
 }));
 
 // ============================================
-// Chat Store
+// Chat Store (Shows Optimization Reasoning)
 // ============================================
 
-interface ChatStore {
-  messages: ChatMessage[];
-  isLoading: boolean;
-  isStreaming: boolean;
-  streamingContent: string;
-  error: string | null;
-  
-  fetchHistory: () => Promise<void>;
-  sendMessage: (content: string, context?: ChatContext) => Promise<void>;
-  sendMessageStreaming: (content: string, context?: ChatContext) => void;
-  clearHistory: () => Promise<void>;
-  cancelStreaming: () => void;
+export interface AgentMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: Date;
+  phase?: string;
+  iteration?: number;
 }
 
-let cancelStreamingFn: (() => void) | null = null;
+interface ChatStore {
+  messages: AgentMessage[];
+  isLoading: boolean;
 
-export const useChatStore = create<ChatStore>((set, _get) => ({
-  messages: [],
+  // Actions
+  addMessage: (message: Omit<AgentMessage, 'id' | 'timestamp'>) => void;
+  addAgentUpdate: (step: StreamStep) => void;
+  clearMessages: () => void;
+}
+
+export const useChatStore = create<ChatStore>((set, get) => ({
+  messages: [
+    {
+      id: 'system_1',
+      role: 'system',
+      content: 'VeriDebugger AI Agent ready. Start an optimization run to see real-time reasoning and progress.',
+      timestamp: new Date(),
+    },
+  ],
   isLoading: false,
-  isStreaming: false,
-  streamingContent: '',
+
+  addMessage: (message) => {
+    set({
+      messages: [
+        ...get().messages,
+        {
+          ...message,
+          id: `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          timestamp: new Date(),
+        },
+      ],
+    });
+  },
+
+  addAgentUpdate: (step: StreamStep) => {
+    if (!step.reasoning) return;
+
+    const phase = step.done ? 'completed' : 'working';
+
+    set({
+      messages: [
+        ...get().messages,
+        {
+          id: `agent_${Date.now()}_${step.iteration}`,
+          role: 'assistant',
+          content: step.reasoning,
+          timestamp: new Date(),
+          phase,
+          iteration: step.iteration,
+        },
+      ],
+    });
+  },
+
+  clearMessages: () => {
+    set({
+      messages: [
+        {
+          id: 'system_1',
+          role: 'system',
+          content: 'VeriDebugger AI Agent ready. Start an optimization run to see real-time reasoning and progress.',
+          timestamp: new Date(),
+        },
+      ],
+    });
+  },
+}));
+
+// ============================================
+// Module Interface Store
+// ============================================
+
+export interface ModulePort {
+  name: string;
+  direction: 'input' | 'output' | 'inout';
+  width: number;
+}
+
+export interface ModuleInterface {
+  moduleName: string;
+  ports: ModulePort[];
+  hasClock: boolean;
+  hasReset: boolean;
+  clockName?: string;
+  resetName?: string;
+}
+
+interface ModuleInterfaceStore {
+  moduleInterface: ModuleInterface | null;
+  isLoading: boolean;
+  error: string | null;
+
+  // Actions
+  extractInterface: (designCode: string) => Promise<void>;
+  clearInterface: () => void;
+}
+
+export const useModuleInterfaceStore = create<ModuleInterfaceStore>((set) => ({
+  moduleInterface: null,
+  isLoading: false,
   error: null,
 
-  fetchHistory: async () => {
-    set({ isLoading: true });
-    try {
-      const messages = await chatApi.getHistory();
-      set({ messages, isLoading: false });
-    } catch (err) {
-      set({ error: (err as Error).message, isLoading: false });
-    }
-  },
-
-  sendMessage: async (content, context) => {
-    const userMessage: ChatMessage = {
-      id: `msg_${Date.now()}`,
-      role: 'user',
-      content,
-      timestamp: new Date(),
-      context,
-    };
-    
-    set((state) => ({
-      messages: [...state.messages, userMessage],
-      isLoading: true,
-    }));
+  extractInterface: async (designCode: string) => {
+    set({ isLoading: true, error: null });
 
     try {
-      const response = await chatApi.sendMessage(content, context);
-      set((state) => ({
-        messages: [...state.messages, response],
+      const response = await backendApi.extractInterface(designCode);
+
+      const inputPorts: ModulePort[] = response.inputs.map(i => ({ name: i.name, direction: 'input' as const, width: i.width }));
+      const outputPorts: ModulePort[] = response.outputs.map(o => ({ name: o.name, direction: 'output' as const, width: o.width }));
+
+      set({
+        moduleInterface: {
+          moduleName: response.module_name,
+          ports: [...inputPorts, ...outputPorts],
+          hasClock: response.inputs.some(i =>
+            i.name.toLowerCase().includes('clk') || i.name.toLowerCase().includes('clock')
+          ),
+          hasReset: response.inputs.some(i =>
+            i.name.toLowerCase().includes('rst') || i.name.toLowerCase().includes('reset')
+          ),
+          clockName: response.inputs.find(i =>
+            i.name.toLowerCase().includes('clk') || i.name.toLowerCase().includes('clock')
+          )?.name,
+          resetName: response.inputs.find(i =>
+            i.name.toLowerCase().includes('rst') || i.name.toLowerCase().includes('reset')
+          )?.name,
+        },
         isLoading: false,
-      }));
+      });
     } catch (err) {
-      set({ error: (err as Error).message, isLoading: false });
+      set({
+        error: (err as Error).message,
+        isLoading: false,
+      });
     }
   },
 
-  sendMessageStreaming: (content, context) => {
-    const userMessage: ChatMessage = {
-      id: `msg_${Date.now()}`,
-      role: 'user',
-      content,
-      timestamp: new Date(),
-      context,
-    };
-
-    set((state) => ({
-      messages: [...state.messages, userMessage],
-      isStreaming: true,
-      streamingContent: '',
-    }));
-
-    cancelStreamingFn = chatApi.streamMessage(
-      content,
-      context,
-      (chunk) => {
-        set((state) => ({
-          streamingContent: state.streamingContent + chunk,
-        }));
-      },
-      (message) => {
-        set((state) => ({
-          messages: [...state.messages, message],
-          isStreaming: false,
-          streamingContent: '',
-        }));
-        cancelStreamingFn = null;
-      }
-    );
+  clearInterface: () => {
+    set({ moduleInterface: null, error: null });
   },
+}));
 
-  clearHistory: async () => {
+// ============================================
+// Backend Health Store
+// ============================================
+
+interface HealthStore {
+  isConnected: boolean;
+  lastCheck: Date | null;
+  error: string | null;
+
+  checkHealth: () => Promise<void>;
+}
+
+export const useHealthStore = create<HealthStore>((set) => ({
+  isConnected: false,
+  lastCheck: null,
+  error: null,
+
+  checkHealth: async () => {
     try {
-      await chatApi.clearHistory();
-      const messages = await chatApi.getHistory();
-      set({ messages });
+      await backendApi.health();
+      set({
+        isConnected: true,
+        lastCheck: new Date(),
+        error: null,
+      });
     } catch (err) {
-      set({ error: (err as Error).message });
-    }
-  },
-
-  cancelStreaming: () => {
-    if (cancelStreamingFn) {
-      cancelStreamingFn();
-      cancelStreamingFn = null;
-      set({ isStreaming: false, streamingContent: '' });
+      set({
+        isConnected: false,
+        lastCheck: new Date(),
+        error: (err as Error).message,
+      });
     }
   },
 }));
@@ -410,43 +383,25 @@ export const useChatStore = create<ChatStore>((set, _get) => ({
 // Selection Store (UI State)
 // ============================================
 
+interface SelectionState {
+  selectedSignalName: string | null;
+  hoveredSignalName: string | null;
+}
+
 interface SelectionStore extends SelectionState {
-  setSelectedNode: (nodeId: string | null) => void;
-  setSelectedSignal: (signalId: string | null) => void;
-  setSelectedRegion: (regionId: string | null) => void;
-  setHoveredNode: (nodeId: string | null) => void;
+  setSelectedSignal: (name: string | null) => void;
+  setHoveredSignal: (name: string | null) => void;
   clearSelection: () => void;
-  getContext: () => ChatContext;
 }
 
 export const useSelectionStore = create(
-  subscribeWithSelector<SelectionStore>((set, get) => ({
-    selectedNodeId: null,
-    selectedSignalId: null,
-    selectedRegionId: null,
-    hoveredNodeId: null,
+  subscribeWithSelector<SelectionStore>((set) => ({
+    selectedSignalName: null,
+    hoveredSignalName: null,
 
-    setSelectedNode: (nodeId) => set({ selectedNodeId: nodeId }),
-    setSelectedSignal: (signalId) => set({ selectedSignalId: signalId }),
-    setSelectedRegion: (regionId) => set({ selectedRegionId: regionId }),
-    setHoveredNode: (nodeId) => set({ hoveredNodeId: nodeId }),
-    
-    clearSelection: () => set({
-      selectedNodeId: null,
-      selectedSignalId: null,
-      selectedRegionId: null,
-    }),
-
-    getContext: () => {
-      const state = get();
-      const simState = useSimulationStore.getState().state;
-      return {
-        selectedNodeIds: state.selectedNodeId ? [state.selectedNodeId] : [],
-        selectedSignalIds: state.selectedSignalId ? [state.selectedSignalId] : [],
-        selectedRegion: state.selectedRegionId || undefined,
-        currentTimestep: simState?.currentTimestep,
-      };
-    },
+    setSelectedSignal: (name) => set({ selectedSignalName: name }),
+    setHoveredSignal: (name) => set({ hoveredSignalName: name }),
+    clearSelection: () => set({ selectedSignalName: null, hoveredSignalName: null }),
   }))
 );
 
@@ -454,28 +409,32 @@ export const useSelectionStore = create(
 // View Settings Store
 // ============================================
 
+interface ViewSettings {
+  showSignalValues: boolean;
+  zoomLevel: number;
+  timeScale: number; // pixels per time unit
+}
+
 interface ViewSettingsStore extends ViewSettings {
-  toggleCriticalPaths: () => void;
-  toggleUtilization: () => void;
   toggleSignalValues: () => void;
-  toggleNodeLabels: () => void;
   setZoom: (level: number) => void;
-  setPan: (position: { x: number; y: number }) => void;
+  setTimeScale: (scale: number) => void;
 }
 
 export const useViewSettingsStore = create<ViewSettingsStore>((set) => ({
-  showCriticalPaths: true,
-  showUtilization: true,
   showSignalValues: true,
-  showNodeLabels: true,
   zoomLevel: 1,
-  panPosition: { x: 0, y: 0 },
+  timeScale: 2,
 
-  toggleCriticalPaths: () => set((s) => ({ showCriticalPaths: !s.showCriticalPaths })),
-  toggleUtilization: () => set((s) => ({ showUtilization: !s.showUtilization })),
   toggleSignalValues: () => set((s) => ({ showSignalValues: !s.showSignalValues })),
-  toggleNodeLabels: () => set((s) => ({ showNodeLabels: !s.showNodeLabels })),
   setZoom: (level) => set({ zoomLevel: level }),
-  setPan: (position) => set({ panPosition: position }),
+  setTimeScale: (scale) => set({ timeScale: scale }),
 }));
 
+// ============================================
+// Legacy exports for backward compatibility
+// ============================================
+
+// These are no longer functional - components should migrate to new stores
+export const useSimulationStore = useWaveformStore;
+export const useOptimizationStore = useLutStatsStore;

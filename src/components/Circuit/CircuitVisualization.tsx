@@ -1,296 +1,151 @@
-import { useCallback, useEffect, useMemo } from 'react';
-import ReactFlow, {
-  Background,
-  Controls,
-  MiniMap,
-  useNodesState,
-  useEdgesState,
-  type Node,
-  type Edge,
-  type OnNodesChange,
-  type OnEdgesChange,
-  MarkerType,
-  ConnectionLineType,
-} from 'reactflow';
-import 'reactflow/dist/style.css';
-import { motion } from 'framer-motion';
-import { useCircuitStore, useSimulationStore, useSelectionStore, useViewSettingsStore } from '../../store';
-import CircuitNode from './CircuitNode';
-import type { FPGANode } from '../../types';
+/**
+ * CodePreview - Shows current optimized Verilog code
+ *
+ * Displays the code from the current optimization run
+ * with syntax highlighting for Verilog.
+ */
+
+import { useMemo, useState } from 'react';
+import { useOptimizationAgentStore, useCurrentOptimizationRun } from '../../store';
 import {
-  Eye,
-  EyeOff,
-  Zap,
-  Activity,
-  Tag,
-  BarChart3,
+  FileCode,
+  Copy,
+  Check,
+  Download,
+  Cpu,
+  CheckCircle2,
+  XCircle,
+  TrendingDown,
 } from 'lucide-react';
 import './CircuitVisualization.css';
 
-const nodeTypes = {
-  circuitNode: CircuitNode,
-};
+const CodePreview = () => {
+  const [copied, setCopied] = useState(false);
+  const { designCode } = useOptimizationAgentStore();
+  const currentRun = useCurrentOptimizationRun();
 
-const CircuitVisualization = () => {
-  const { region, isLoading, fetchCircuit } = useCircuitStore();
-  const { state: simState } = useSimulationStore();
-  const { selectedNodeId } = useSelectionStore();
-  const { 
-    showCriticalPaths, 
-    showUtilization, 
-    showSignalValues, 
-    showNodeLabels,
-    toggleCriticalPaths,
-    toggleUtilization,
-    toggleSignalValues,
-    toggleNodeLabels,
-  } = useViewSettingsStore();
+  // Use optimized code if available, else original
+  const displayCode = currentRun?.code || designCode;
 
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(displayCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
-  // Fetch circuit data on mount
-  useEffect(() => {
-    fetchCircuit();
-  }, [fetchCircuit]);
+  const handleDownload = () => {
+    const blob = new Blob([displayCode], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'optimized_design.v';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
-  // Convert FPGA nodes to ReactFlow nodes
-  useEffect(() => {
-    if (!region) return;
+  // Simple syntax highlighting for Verilog
+  const highlightedCode = useMemo(() => {
+    const keywords = /\b(module|endmodule|input|output|inout|wire|reg|always|begin|end|if|else|case|endcase|for|while|assign|parameter|localparam|generate|endgenerate|integer|posedge|negedge|initial|function|endfunction|task|endtask)\b/g;
+    const types = /\b(logic|bit|int|real|time|signed|unsigned)\b/g;
+    const numbers = /\b(\d+'[bBhHdDoO][0-9a-fA-F_]+|\d+)\b/g;
+    const comments = /(\/\/.*$|\/\*[\s\S]*?\*\/)/gm;
+    const strings = /(".*?")/g;
 
-    const activeNodes = new Set(simState?.activeNodes || []);
-    const activePaths = new Set(simState?.activePaths || []);
+    let code = displayCode;
 
-    const flowNodes: Node[] = region.nodes.map((node: FPGANode) => ({
-      id: node.id,
-      type: 'circuitNode',
-      position: node.position,
-      data: {
-        ...node,
-        isActive: activeNodes.has(node.id),
-      },
-      selected: node.id === selectedNodeId,
-    }));
+    // Escape HTML
+    code = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-    const flowEdges: Edge[] = region.connections.map((conn) => ({
-      id: conn.id,
-      source: conn.source,
-      target: conn.target,
-      type: 'smoothstep',
-      animated: activePaths.has(conn.id),
-      style: {
-        stroke: conn.isCriticalPath && showCriticalPaths 
-          ? '#ef4444' 
-          : activePaths.has(conn.id) 
-            ? '#22c55e' 
-            : '#94a3b8',
-        strokeWidth: conn.isCriticalPath ? 2.5 : activePaths.has(conn.id) ? 2 : 1.5,
-      },
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        color: conn.isCriticalPath && showCriticalPaths 
-          ? '#ef4444' 
-          : activePaths.has(conn.id) 
-            ? '#22c55e' 
-            : '#94a3b8',
-        width: 15,
-        height: 15,
-      },
-      label: conn.signalName,
-      labelStyle: { 
-        fontSize: 9, 
-        fill: '#64748b',
-        fontFamily: 'JetBrains Mono, SF Mono, monospace',
-      },
-      labelBgStyle: { 
-        fill: 'white', 
-        fillOpacity: 0.8,
-      },
-    }));
+    // Apply highlighting
+    code = code.replace(comments, '<span class="comment">$1</span>');
+    code = code.replace(strings, '<span class="string">$1</span>');
+    code = code.replace(keywords, '<span class="keyword">$1</span>');
+    code = code.replace(types, '<span class="type">$1</span>');
+    code = code.replace(numbers, '<span class="number">$1</span>');
 
-    setNodes(flowNodes);
-    setEdges(flowEdges);
-  }, [region, simState, selectedNodeId, showCriticalPaths, setNodes, setEdges]);
+    return code;
+  }, [displayCode]);
 
-  const handleNodesChange: OnNodesChange = useCallback(
-    (changes) => {
-      onNodesChange(changes);
-    },
-    [onNodesChange]
-  );
-
-  const handleEdgesChange: OnEdgesChange = useCallback(
-    (changes) => {
-      onEdgesChange(changes);
-    },
-    [onEdgesChange]
-  );
-
-  // Stats for the header
-  const stats = useMemo(() => {
-    if (!region) return null;
-    const lutNodes = region.nodes.filter(n => n.type === 'lut');
-    const avgUtilization = lutNodes.length > 0
-      ? lutNodes.reduce((sum, n) => sum + n.utilization, 0) / lutNodes.length
-      : 0;
-    const criticalCount = region.nodes.filter(n => n.isCriticalPath).length;
-    return {
-      totalNodes: region.nodes.length,
-      lutCount: lutNodes.length,
-      avgUtilization: Math.round(avgUtilization),
-      criticalCount,
-    };
-  }, [region]);
-
-  if (isLoading) {
-    return (
-      <div className="circuit-visualization circuit-visualization--loading">
-        <motion.div
-          className="circuit-visualization__loader"
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
-        >
-          <Activity size={32} />
-        </motion.div>
-        <p>Loading circuit topology...</p>
-      </div>
-    );
-  }
+  const lineCount = displayCode.split('\n').length;
+  const reduction = currentRun?.lutHistory && currentRun.lutHistory.length > 1
+    ? Math.round(((currentRun.lutHistory[0] - currentRun.lutHistory[currentRun.lutHistory.length - 1]) / currentRun.lutHistory[0]) * 100)
+    : 0;
 
   return (
-    <div className="circuit-visualization">
-      {/* Header with stats and controls */}
-      <div className="circuit-visualization__header">
-        <div className="circuit-visualization__title">
-          <h2>Circuit Topology</h2>
-          {region && (
-            <span className="circuit-visualization__region-name">
-              {region.name}
+    <div className="code-preview">
+      {/* Header */}
+      <div className="code-preview__header">
+        <div className="code-preview__title">
+          <FileCode size={14} />
+          <span>{currentRun ? 'Optimized Code' : 'Design Code'}</span>
+          {currentRun && (
+            <span className="code-preview__badge">
+              Iteration {currentRun.iteration}
             </span>
           )}
         </div>
 
-        {stats && (
-          <div className="circuit-visualization__stats">
-            <div className="circuit-visualization__stat">
-              <span className="circuit-visualization__stat-value">{stats.totalNodes}</span>
-              <span className="circuit-visualization__stat-label">Nodes</span>
+        <div className="code-preview__stats">
+          {currentRun?.lutCount !== null && currentRun?.lutCount !== undefined && (
+            <div className="code-preview__stat">
+              <Cpu size={12} />
+              <span>{currentRun.lutCount} LUTs</span>
             </div>
-            <div className="circuit-visualization__stat">
-              <span className="circuit-visualization__stat-value">{stats.lutCount}</span>
-              <span className="circuit-visualization__stat-label">LUTs</span>
+          )}
+          {reduction > 0 && (
+            <div className="code-preview__stat code-preview__stat--success">
+              <TrendingDown size={12} />
+              <span>{reduction}% reduced</span>
             </div>
-            <div className="circuit-visualization__stat">
-              <span className="circuit-visualization__stat-value">{stats.avgUtilization}%</span>
-              <span className="circuit-visualization__stat-label">Avg Util</span>
+          )}
+          {currentRun && (
+            <div className={`code-preview__stat ${currentRun.simPassed ? 'code-preview__stat--success' : 'code-preview__stat--error'}`}>
+              {currentRun.simPassed ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
+              <span>{currentRun.simPassed ? 'Tests Pass' : 'Tests Fail'}</span>
             </div>
-            <div className="circuit-visualization__stat circuit-visualization__stat--critical">
-              <span className="circuit-visualization__stat-value">{stats.criticalCount}</span>
-              <span className="circuit-visualization__stat-label">Critical</span>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        <div className="circuit-visualization__controls">
+        <div className="code-preview__actions">
           <button
-            className={`circuit-visualization__toggle ${showCriticalPaths ? 'circuit-visualization__toggle--active' : ''}`}
-            onClick={toggleCriticalPaths}
-            title="Show Critical Paths"
+            className="code-preview__btn"
+            onClick={handleCopy}
+            title="Copy to clipboard"
           >
-            <Zap size={14} />
+            {copied ? <Check size={14} /> : <Copy size={14} />}
           </button>
           <button
-            className={`circuit-visualization__toggle ${showUtilization ? 'circuit-visualization__toggle--active' : ''}`}
-            onClick={toggleUtilization}
-            title="Show Utilization"
+            className="code-preview__btn"
+            onClick={handleDownload}
+            title="Download Verilog file"
           >
-            <BarChart3 size={14} />
-          </button>
-          <button
-            className={`circuit-visualization__toggle ${showSignalValues ? 'circuit-visualization__toggle--active' : ''}`}
-            onClick={toggleSignalValues}
-            title="Show Signal Values"
-          >
-            {showSignalValues ? <Eye size={14} /> : <EyeOff size={14} />}
-          </button>
-          <button
-            className={`circuit-visualization__toggle ${showNodeLabels ? 'circuit-visualization__toggle--active' : ''}`}
-            onClick={toggleNodeLabels}
-            title="Show Node Labels"
-          >
-            <Tag size={14} />
+            <Download size={14} />
           </button>
         </div>
       </div>
 
-      {/* ReactFlow canvas */}
-      <div className="circuit-visualization__canvas">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={handleNodesChange}
-          onEdgesChange={handleEdgesChange}
-          nodeTypes={nodeTypes}
-          connectionLineType={ConnectionLineType.SmoothStep}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          minZoom={0.1}
-          maxZoom={2}
-          defaultEdgeOptions={{
-            type: 'smoothstep',
-          }}
-        >
-          <Background color="#e2e8f0" gap={20} size={1} />
-          <Controls className="circuit-visualization__flow-controls" />
-          <MiniMap
-            className="circuit-visualization__minimap"
-            nodeColor={(node) => {
-              const data = node.data as FPGANode;
-              if (data.isCriticalPath) return '#ef4444';
-              switch (data.type) {
-                case 'lut': return '#fbbf24';
-                case 'register': return '#38bdf8';
-                case 'dsp': return '#d946ef';
-                case 'io': return '#22c55e';
-                case 'mux': return '#f97316';
-                default: return '#94a3b8';
-              }
-            }}
-            maskColor="rgba(0, 0, 0, 0.1)"
-          />
-        </ReactFlow>
+      {/* Code display */}
+      <div className="code-preview__content">
+        <div className="code-preview__line-numbers">
+          {Array.from({ length: lineCount }, (_, i) => (
+            <span key={i + 1}>{i + 1}</span>
+          ))}
+        </div>
+        <pre className="code-preview__code">
+          <code dangerouslySetInnerHTML={{ __html: highlightedCode }} />
+        </pre>
       </div>
 
-      {/* Legend */}
-      <div className="circuit-visualization__legend">
-        <div className="circuit-visualization__legend-item">
-          <span className="circuit-visualization__legend-color circuit-visualization__legend-color--lut" />
-          <span>LUT</span>
-        </div>
-        <div className="circuit-visualization__legend-item">
-          <span className="circuit-visualization__legend-color circuit-visualization__legend-color--register" />
-          <span>Register</span>
-        </div>
-        <div className="circuit-visualization__legend-item">
-          <span className="circuit-visualization__legend-color circuit-visualization__legend-color--dsp" />
-          <span>DSP</span>
-        </div>
-        <div className="circuit-visualization__legend-item">
-          <span className="circuit-visualization__legend-color circuit-visualization__legend-color--io" />
-          <span>I/O</span>
-        </div>
-        <div className="circuit-visualization__legend-item">
-          <span className="circuit-visualization__legend-color circuit-visualization__legend-color--mux" />
-          <span>MUX</span>
-        </div>
-        <div className="circuit-visualization__legend-item">
-          <span className="circuit-visualization__legend-color circuit-visualization__legend-color--critical" />
-          <span>Critical</span>
-        </div>
+      {/* Footer */}
+      <div className="code-preview__footer">
+        <span>{lineCount} lines</span>
+        <span>Verilog HDL</span>
       </div>
     </div>
   );
 };
 
-export default CircuitVisualization;
+// Keep the same export name for backward compatibility
+const CircuitVisualization = CodePreview;
 
+export default CircuitVisualization;

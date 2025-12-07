@@ -1,14 +1,15 @@
-import { memo } from 'react';
+/**
+ * ChatMessage - Displays optimization agent messages
+ */
+
+import { memo, useState } from 'react';
 import { motion } from 'framer-motion';
-import type { ChatMessage as ChatMessageType } from '../../types';
-import { User, Bot, Terminal, Copy, Check } from 'lucide-react';
-import { useState } from 'react';
+import type { AgentMessage } from '../../store';
+import { User, Bot, Terminal, Copy, Check, Zap, CheckCircle2 } from 'lucide-react';
 import './ChatMessage.css';
 
 interface ChatMessageProps {
-  message: ChatMessageType;
-  isStreaming?: boolean;
-  streamingContent?: string;
+  message: AgentMessage;
 }
 
 const CodeBlock = ({ code, language, filename }: { code: string; language: string; filename?: string }) => {
@@ -37,7 +38,7 @@ const CodeBlock = ({ code, language, filename }: { code: string; language: strin
   );
 };
 
-const ChatMessage = memo(({ message, isStreaming, streamingContent }: ChatMessageProps) => {
+const ChatMessage = memo(({ message }: ChatMessageProps) => {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isAssistant = message.role === 'assistant';
@@ -46,22 +47,22 @@ const ChatMessage = memo(({ message, isStreaming, streamingContent }: ChatMessag
   const formatContent = (content: string) => {
     // Split by code blocks first
     const parts = content.split(/(```[\s\S]*?```)/g);
-    
+
     return parts.map((part, i) => {
       if (part.startsWith('```')) {
         // Extract language and code
         const match = part.match(/```(\w+)?\n?([\s\S]*?)```/);
         if (match) {
           return (
-            <CodeBlock 
-              key={i} 
-              language={match[1] || 'text'} 
-              code={match[2].trim()} 
+            <CodeBlock
+              key={i}
+              language={match[1] || 'text'}
+              code={match[2].trim()}
             />
           );
         }
       }
-      
+
       // Format regular text with bold and lists
       return (
         <div key={i} className="chat-message__text">
@@ -74,11 +75,11 @@ const ChatMessage = memo(({ message, isStreaming, streamingContent }: ChatMessag
             } else if (line.match(/^\d+\.\s/)) {
               formatted = `<li>${formatted.replace(/^\d+\.\s/, '')}</li>`;
             }
-            
+
             return (
-              <span 
-                key={j} 
-                dangerouslySetInnerHTML={{ __html: formatted || '<br/>' }} 
+              <span
+                key={j}
+                dangerouslySetInnerHTML={{ __html: formatted || '<br/>' }}
               />
             );
           })}
@@ -106,78 +107,29 @@ const ChatMessage = memo(({ message, isStreaming, streamingContent }: ChatMessag
         {/* Header */}
         <div className="chat-message__header">
           <span className="chat-message__role">
-            {isUser ? 'You' : isAssistant ? 'Vibe Debugger' : 'System'}
+            {isUser ? 'You' : isAssistant ? 'AI Agent' : 'System'}
           </span>
+          {message.iteration !== undefined && (
+            <span className="chat-message__iteration">
+              <Zap size={10} />
+              Iter {message.iteration}
+            </span>
+          )}
+          {message.phase && (
+            <span className={`chat-message__phase chat-message__phase--${message.phase}`}>
+              {message.phase === 'completed' && <CheckCircle2 size={10} />}
+              {message.phase}
+            </span>
+          )}
           <span className="chat-message__time">
             {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </span>
         </div>
 
-        {/* Context badge */}
-        {message.context && (message.context.selectedNodeIds.length > 0 || message.context.selectedSignalIds.length > 0) && (
-          <div className="chat-message__context">
-            {message.context.selectedNodeIds.length > 0 && (
-              <span className="chat-message__context-badge">
-                🔲 {message.context.selectedNodeIds.length} node{message.context.selectedNodeIds.length > 1 ? 's' : ''}
-              </span>
-            )}
-            {message.context.selectedSignalIds.length > 0 && (
-              <span className="chat-message__context-badge">
-                📊 {message.context.selectedSignalIds.length} signal{message.context.selectedSignalIds.length > 1 ? 's' : ''}
-              </span>
-            )}
-            {message.context.currentTimestep !== undefined && (
-              <span className="chat-message__context-badge">
-                ⏱️ t={message.context.currentTimestep}
-              </span>
-            )}
-          </div>
-        )}
-
         {/* Message body */}
         <div className="chat-message__body">
-          {isStreaming && streamingContent ? (
-            <>
-              {formatContent(streamingContent)}
-              <motion.span
-                className="chat-message__cursor"
-                animate={{ opacity: [1, 0] }}
-                transition={{ duration: 0.5, repeat: Infinity }}
-              >
-                ▊
-              </motion.span>
-            </>
-          ) : (
-            formatContent(message.content)
-          )}
+          {formatContent(message.content)}
         </div>
-
-        {/* Code snippets from API */}
-        {message.codeSnippets && message.codeSnippets.length > 0 && (
-          <div className="chat-message__snippets">
-            {message.codeSnippets.map((snippet, i) => (
-              <CodeBlock
-                key={i}
-                language={snippet.language}
-                code={snippet.code}
-                filename={snippet.filename}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* Tool calls */}
-        {message.toolCalls && message.toolCalls.length > 0 && (
-          <div className="chat-message__tools">
-            {message.toolCalls.map((tool) => (
-              <div key={tool.id} className={`chat-message__tool chat-message__tool--${tool.status}`}>
-                <Terminal size={12} />
-                <span>{tool.name}</span>
-                <span className="chat-message__tool-status">{tool.status}</span>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </motion.div>
   );
@@ -186,4 +138,3 @@ const ChatMessage = memo(({ message, isStreaming, streamingContent }: ChatMessag
 ChatMessage.displayName = 'ChatMessage';
 
 export default ChatMessage;
-

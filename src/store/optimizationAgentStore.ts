@@ -16,6 +16,8 @@ import {
 
 type AgentMode = 'optimize' | 'testgen';
 type AgentStatus = 'idle' | 'starting' | 'running' | 'completed' | 'failed';
+export type CodeLanguage = 'verilog' | 'c';
+export type OptimizationGoal = 'compile' | 'verify' | 'optimize';
 
 interface OptimizationRun {
   runId: string;
@@ -43,11 +45,22 @@ interface OptimizationAgentStore {
   designCode: string;
   testbenchCode: string;
   maxIterations: number;
+  codeLanguage: CodeLanguage;
+  goal: OptimizationGoal;
+
+  // C to Verilog conversion state
+  isConverting: boolean;
+  conversionMessage: string | null;
+  conversionSuccess: boolean | null;
 
   // Actions
   setDesignCode: (code: string) => void;
   setTestbenchCode: (code: string) => void;
   setMaxIterations: (max: number) => void;
+  setCodeLanguage: (lang: CodeLanguage) => void;
+  setGoal: (goal: OptimizationGoal) => void;
+  convertCToVerilog: () => Promise<void>;
+  clearConversionMessage: () => void;
   startOptimization: () => Promise<void>;
   startTestGen: () => Promise<void>;
   generateTestbench: () => Promise<void>;
@@ -130,6 +143,22 @@ module matmul_tb;
   end
 endmodule`;
 
+const SAMPLE_C_CODE = `// Simple matrix multiplication in C
+// This will be converted to Verilog using BAMBU HLS
+
+#define SIZE 4
+
+void matmul(int A[SIZE][SIZE], int B[SIZE][SIZE], int C[SIZE][SIZE]) {
+    for (int i = 0; i < SIZE; i++) {
+        for (int j = 0; j < SIZE; j++) {
+            C[i][j] = 0;
+            for (int k = 0; k < SIZE; k++) {
+                C[i][j] += A[i][k] * B[k][j];
+            }
+        }
+    }
+}`;
+
 export const useOptimizationAgentStore = create<OptimizationAgentStore>((set, get) => ({
   currentRun: null,
   isStarting: false,
@@ -141,17 +170,71 @@ export const useOptimizationAgentStore = create<OptimizationAgentStore>((set, ge
   designCode: SAMPLE_DESIGN,
   testbenchCode: SAMPLE_TESTBENCH,
   maxIterations: 10,
+  codeLanguage: 'verilog' as CodeLanguage,
+  goal: 'optimize' as OptimizationGoal,
+
+  // C to Verilog conversion state
+  isConverting: false,
+  conversionMessage: null,
+  conversionSuccess: null,
 
   setDesignCode: (code) => set({ designCode: code }),
   setTestbenchCode: (code) => set({ testbenchCode: code }),
   setMaxIterations: (max) => set({ maxIterations: max }),
+  setCodeLanguage: (lang) => {
+    // Switch sample code when language changes
+    if (lang === 'c') {
+      set({ codeLanguage: lang, designCode: SAMPLE_C_CODE });
+    } else {
+      set({ codeLanguage: lang, designCode: SAMPLE_DESIGN });
+    }
+  },
+
+  setGoal: (goal) => set({ goal }),
+
+  convertCToVerilog: async () => {
+    const { designCode } = get();
+    set({ isConverting: true, conversionMessage: null, conversionSuccess: null });
+
+    try {
+      const response = await backendApi.convertCToVerilog({
+        c_code: designCode,
+        top_function: 'matmul', // Default top function
+      });
+
+      if (response.success && response.verilog_code) {
+        set({
+          designCode: response.verilog_code,
+          codeLanguage: 'verilog',
+          isConverting: false,
+          conversionMessage: 'Successfully converted C to Verilog!',
+          conversionSuccess: true,
+        });
+      } else {
+        const errorMsg = response.errors?.join(', ') || response.message || 'Conversion failed';
+        set({
+          isConverting: false,
+          conversionMessage: errorMsg,
+          conversionSuccess: false,
+        });
+      }
+    } catch (err) {
+      set({
+        isConverting: false,
+        conversionMessage: (err as Error).message,
+        conversionSuccess: false,
+      });
+    }
+  },
+
+  clearConversionMessage: () => set({ conversionMessage: null, conversionSuccess: null }),
 
   _setStream: (stream) => {
     set({ _stream: stream });
   },
 
   startOptimization: async () => {
-    const { designCode, testbenchCode, maxIterations } = get();
+    const { designCode, testbenchCode, maxIterations, goal } = get();
 
     // Clean up existing stream
     const existingStream = get()._stream;
@@ -162,11 +245,12 @@ export const useOptimizationAgentStore = create<OptimizationAgentStore>((set, ge
     set({ isStarting: true, error: null, currentRun: null });
 
     try {
-      // Start the optimization run
+      // Start the optimization run with goal
       const response = await backendApi.startOptimization({
         design_code: designCode,
         testbench_code: testbenchCode,
         max_iterations: maxIterations,
+        goal: goal,
       });
 
       const runId = response.run_id;
@@ -377,3 +461,16 @@ export const useDesignCode = () =>
 
 export const useTestbenchCode = () =>
   useOptimizationAgentStore((state) => state.testbenchCode);
+
+export const useCodeLanguage = () =>
+  useOptimizationAgentStore((state) => state.codeLanguage);
+
+export const useConversionState = () =>
+  useOptimizationAgentStore((state) => ({
+    isConverting: state.isConverting,
+    conversionMessage: state.conversionMessage,
+    conversionSuccess: state.conversionSuccess,
+  }));
+
+export const useGoal = () =>
+  useOptimizationAgentStore((state) => state.goal);
