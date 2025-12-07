@@ -308,11 +308,23 @@ def check_c_syntax(code: str) -> ConvertResult:
         )
 
 
+def extract_c_function_names(code: str) -> list[str]:
+    """Extract function names from C code."""
+    # Match C function definitions: return_type function_name(params) {
+    func_pattern = r'(?:^|[\s;{}])(?:static\s+)?(?:inline\s+)?(?:const\s+)?(?:unsigned\s+)?(?:signed\s+)?(?:long\s+)?(?:short\s+)?(?:void|int|char|float|double|bool|\w+_t)\s+\**\s*(\w+)\s*\([^)]*\)\s*\{'
+    functions = []
+    for match in re.finditer(func_pattern, code, re.MULTILINE):
+        func_name = match.group(1)
+        if func_name and not func_name.startswith('_'):
+            functions.append(func_name)
+    return functions
+
+
 def convert_c_to_verilog(code: str, top_function: str = "main") -> ConvertResult:
     """Convert C code to Verilog using BAMBU HLS.
 
     Fails fast: checks C syntax first, then runs BAMBU.
-    No auto-fix on failure - returns errors for user to fix.
+    Auto-detects top function if specified one is not found.
     """
     # Step 1: Check C syntax first (fail fast)
     syntax_check = check_c_syntax(code)
@@ -324,7 +336,14 @@ def convert_c_to_verilog(code: str, top_function: str = "main") -> ConvertResult
             raw_output=syntax_check.raw_output
         )
 
-    # Step 2: Run BAMBU HLS
+    # Step 2: Auto-detect top function if specified one isn't in the code
+    functions = extract_c_function_names(code)
+    if top_function not in functions and functions:
+        # Use first non-main function, or first function if all are main
+        non_main = [f for f in functions if f != 'main']
+        top_function = non_main[0] if non_main else functions[0]
+
+    # Step 3: Run BAMBU HLS
     c_file = WORK_DIR / "design.c"
     c_file.write_text(code)
     bambu_out = WORK_DIR / "bambu_out"
