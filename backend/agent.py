@@ -303,8 +303,9 @@ Optimize the design to reduce LUT count while maintaining correctness. Provide a
     # Check for edit action
     if "edit" in response:
         edit = response["edit"]
+        original_code = state["design_code"]
         edited = execute_tool("edit_code", {
-            "original": state["design_code"],
+            "original": original_code,
             "edit_type": edit.get("edit_type", "replace"),
             "line_start": edit.get("line_start", 1),
             "line_end": edit.get("line_end"),
@@ -317,7 +318,15 @@ Optimize the design to reduce LUT count while maintaining correctness. Provide a
             "design_code": edited["edited_code"],
             "phase": new_phase,
             "reasoning": reasoning,
-            "phase_history": phase_history
+            "phase_history": phase_history,
+            # Include edit details for frontend diff view
+            "edit_applied": {
+                "edit_type": edit.get("edit_type", "replace"),
+                "line_start": edit.get("line_start", 1),
+                "line_end": edit.get("line_end", edit.get("line_start", 1)),
+                "new_content": edit.get("new_content", ""),
+                "original_lines": original_code.split('\n')[edit.get("line_start", 1)-1:edit.get("line_end", edit.get("line_start", 1))]
+            }
         }
 
     return {
@@ -435,8 +444,9 @@ def debug_node(state: AgentState) -> dict:
     # Apply fix if provided
     if "edit" in result:
         edit = result["edit"]
+        original_code = state["design_code"]
         edited = execute_tool("edit_code", {
-            "original": state["design_code"],
+            "original": original_code,
             "edit_type": edit.get("edit_type", "replace"),
             "line_start": edit.get("line_start", 1),
             "line_end": edit.get("line_end"),
@@ -449,7 +459,15 @@ def debug_node(state: AgentState) -> dict:
             "debug_trace": causal_chain,
             "phase": "compile",  # Go back to compile to verify fix
             "reasoning": reasoning,
-            "phase_history": phase_history
+            "phase_history": phase_history,
+            # Include edit details for frontend diff view
+            "edit_applied": {
+                "edit_type": edit.get("edit_type", "replace"),
+                "line_start": edit.get("line_start", 1),
+                "line_end": edit.get("line_end", edit.get("line_start", 1)),
+                "new_content": edit.get("new_content", ""),
+                "original_lines": original_code.split('\n')[edit.get("line_start", 1)-1:edit.get("line_end", edit.get("line_start", 1))]
+            }
         }
 
     return {
@@ -656,6 +674,7 @@ async def run_agent_streaming(design_code: str, testbench_code: str, max_iterati
                             "debug_trace": node_state.get("debug_trace"),
                             "phase_history": node_state.get("phase_history", []),
                             "errors_after": errors_after,
+                            "edit_applied": node_state.get("edit_applied"),  # Include edit details
                             "done": node_state.get("phase") == "done"
                         }
     except Exception as e:

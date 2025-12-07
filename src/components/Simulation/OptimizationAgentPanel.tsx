@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useOptimizationAgentStore } from '../../store';
 import CodeEditor from './CodeEditor';
@@ -20,16 +20,33 @@ import {
   ChevronDown,
   ChevronUp,
   ArrowRight,
+  AlertTriangle,
 } from 'lucide-react';
 import './OptimizationAgentPanel.css';
 import './CodeEditor.css';
 
 type TabMode = 'optimize' | 'testgen';
 
+// Extract module name from Verilog code
+const extractModuleName = (code: string): string | null => {
+  const match = code.match(/module\s+(\w+)/);
+  return match ? match[1] : null;
+};
+
+// Check if testbench instantiates a specific module
+const checkTestbenchModule = (testbench: string, moduleName: string): boolean => {
+  // Look for module instantiation patterns
+  const patterns = [
+    new RegExp(`\\b${moduleName}\\s+\\w+\\s*\\(`, 'i'),  // moduleName instance_name (
+    new RegExp(`\\b${moduleName}\\s*#\\s*\\(`, 'i'),     // moduleName #(
+  ];
+  return patterns.some(p => p.test(testbench));
+};
+
 const OptimizationAgentPanel = () => {
   const [activeTab, setActiveTab] = useState<TabMode>('optimize');
   const [showDesignCode, setShowDesignCode] = useState(true);
-  const [showTestbench, setShowTestbench] = useState(false);
+  const [showTestbench, setShowTestbench] = useState(true); // Show by default now
 
   const {
     currentRun,
@@ -60,6 +77,34 @@ const OptimizationAgentPanel = () => {
   } = useOptimizationAgentStore();
 
   const isRunning = currentRun?.status === 'running';
+
+  // Detect module name mismatch between design and testbench
+  const moduleMismatch = useMemo(() => {
+    if (codeLanguage !== 'verilog') return null;
+
+    const designModule = extractModuleName(designCode);
+    if (!designModule) return null;
+
+    const testbenchHasModule = checkTestbenchModule(testbenchCode, designModule);
+    if (!testbenchHasModule) {
+      // Try to find what module the testbench IS testing
+      const tbMatch = testbenchCode.match(/(\w+)\s+(?:uut|dut|inst\w*)\s*\(/i)
+                   || testbenchCode.match(/(\w+)\s*#\s*\([^)]*\)\s*\w+\s*\(/);
+      const tbModule = tbMatch ? tbMatch[1] : 'unknown';
+      return {
+        design: designModule,
+        testbench: tbModule,
+      };
+    }
+    return null;
+  }, [designCode, testbenchCode, codeLanguage]);
+
+  // Auto-expand testbench section when there's a mismatch
+  useEffect(() => {
+    if (moduleMismatch && !showTestbench) {
+      setShowTestbench(true);
+    }
+  }, [moduleMismatch]);
 
   const handleStart = () => {
     if (activeTab === 'optimize') {
@@ -230,16 +275,45 @@ const OptimizationAgentPanel = () => {
           {activeTab === 'optimize' && (
             <div className="optimization-agent-panel__code-section">
               <button
-                className="optimization-agent-panel__code-toggle"
+                className={`optimization-agent-panel__code-toggle ${moduleMismatch ? 'optimization-agent-panel__code-toggle--warning' : ''}`}
                 onClick={() => setShowTestbench(!showTestbench)}
               >
                 <TestTube size={14} />
                 <span>Testbench</span>
+                {moduleMismatch && (
+                  <span className="optimization-agent-panel__mismatch-badge">
+                    <AlertTriangle size={12} />
+                    Mismatch
+                  </span>
+                )}
                 <span className="optimization-agent-panel__code-lines">
                   {testbenchCode.split('\n').length} lines
                 </span>
                 {showTestbench ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
               </button>
+
+              {/* Module mismatch warning */}
+              <AnimatePresence>
+                {moduleMismatch && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="optimization-agent-panel__mismatch-warning"
+                  >
+                    <AlertTriangle size={14} />
+                    <div>
+                      <strong>Module mismatch detected!</strong>
+                      <p>
+                        Design: <code>{moduleMismatch.design}</code> |
+                        Testbench tests: <code>{moduleMismatch.testbench}</code>
+                      </p>
+                      <p>Click "Auto-generate" to create a matching testbench.</p>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               <AnimatePresence>
                 {showTestbench && (
                   <motion.div
@@ -250,12 +324,12 @@ const OptimizationAgentPanel = () => {
                   >
                     <div className="optimization-agent-panel__code-actions">
                       <button
-                        className="optimization-agent-panel__generate-btn"
+                        className={`optimization-agent-panel__generate-btn ${moduleMismatch ? 'optimization-agent-panel__generate-btn--highlight' : ''}`}
                         onClick={generateTestbench}
                         disabled={isStarting}
                       >
                         <Wand2 size={12} />
-                        Auto-generate
+                        {moduleMismatch ? 'Generate Matching Testbench' : 'Auto-generate'}
                       </button>
                     </div>
                     <CodeEditor

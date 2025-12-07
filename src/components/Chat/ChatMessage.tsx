@@ -4,13 +4,49 @@
 
 import { memo, useState } from 'react';
 import { motion } from 'framer-motion';
-import type { AgentMessage } from '../../store';
-import { User, Bot, Terminal, Copy, Check, Zap, CheckCircle2 } from 'lucide-react';
+import type { AgentMessage, EditApplied } from '../../store';
+import { User, Bot, Terminal, Copy, Check, Zap, CheckCircle2, FileEdit, Minus, Plus } from 'lucide-react';
 import './ChatMessage.css';
 
 interface ChatMessageProps {
   message: AgentMessage;
 }
+
+const DiffView = ({ edit }: { edit: EditApplied }) => {
+  const originalLines = edit.original_lines || [];
+  const newLines = edit.new_content.split('\n').filter(line => line.length > 0 || edit.new_content.includes('\n'));
+
+  return (
+    <div className="chat-diff-view">
+      <div className="chat-diff-view__header">
+        <FileEdit size={14} />
+        <span>
+          {edit.edit_type === 'replace' && `Replaced lines ${edit.line_start}-${edit.line_end}`}
+          {edit.edit_type === 'insert_after' && `Inserted after line ${edit.line_start}`}
+          {edit.edit_type === 'delete' && `Deleted lines ${edit.line_start}-${edit.line_end}`}
+        </span>
+      </div>
+      <div className="chat-diff-view__content">
+        {/* Show removed lines */}
+        {(edit.edit_type === 'replace' || edit.edit_type === 'delete') && originalLines.map((line, i) => (
+          <div key={`old-${i}`} className="chat-diff-view__line chat-diff-view__line--removed">
+            <span className="chat-diff-view__line-num">{edit.line_start + i}</span>
+            <Minus size={12} className="chat-diff-view__icon" />
+            <code>{line || ' '}</code>
+          </div>
+        ))}
+        {/* Show added lines */}
+        {(edit.edit_type === 'replace' || edit.edit_type === 'insert_after') && newLines.map((line, i) => (
+          <div key={`new-${i}`} className="chat-diff-view__line chat-diff-view__line--added">
+            <span className="chat-diff-view__line-num">{edit.line_start + i}</span>
+            <Plus size={12} className="chat-diff-view__icon" />
+            <code>{line || ' '}</code>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const CodeBlock = ({ code, language, filename }: { code: string; language: string; filename?: string }) => {
   const [copied, setCopied] = useState(false);
@@ -130,6 +166,11 @@ const ChatMessage = memo(({ message }: ChatMessageProps) => {
         <div className="chat-message__body">
           {formatContent(message.content)}
         </div>
+
+        {/* Show diff view if edit was applied */}
+        {message.edit && (
+          <DiffView edit={message.edit} />
+        )}
       </div>
     </motion.div>
   );

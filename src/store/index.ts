@@ -192,6 +192,14 @@ export const useLutStatsStore = create<LutStatsStore>((set, get) => ({
 // Chat Store (Shows Optimization Reasoning)
 // ============================================
 
+export interface EditApplied {
+  edit_type: 'replace' | 'insert_after' | 'delete';
+  line_start: number;
+  line_end: number;
+  new_content: string;
+  original_lines: string[];
+}
+
 export interface AgentMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -199,6 +207,7 @@ export interface AgentMessage {
   timestamp: Date;
   phase?: string;
   iteration?: number;
+  edit?: EditApplied;
 }
 
 interface ChatStore {
@@ -208,6 +217,7 @@ interface ChatStore {
   // Actions
   addMessage: (message: Omit<AgentMessage, 'id' | 'timestamp'>) => void;
   addAgentUpdate: (step: StreamStep) => void;
+  addEditMessage: (edit: EditApplied, reasoning: string, iteration: number) => void;
   clearMessages: () => void;
 }
 
@@ -250,6 +260,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           timestamp: new Date(),
           phase,
           iteration: step.iteration,
+          edit: step.edit_applied || undefined,
+        },
+      ],
+    });
+  },
+
+  addEditMessage: (edit: EditApplied, reasoning: string, iteration: number) => {
+    set({
+      messages: [
+        ...get().messages,
+        {
+          id: `edit_${Date.now()}_${iteration}`,
+          role: 'assistant',
+          content: reasoning,
+          timestamp: new Date(),
+          phase: 'editing',
+          iteration,
+          edit,
         },
       ],
     });

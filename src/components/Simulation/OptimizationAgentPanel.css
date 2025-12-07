@@ -240,6 +240,91 @@
   cursor: not-allowed;
 }
 
+/* Highlighted generate button when there's a mismatch */
+.optimization-agent-panel__generate-btn--highlight {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  animation: pulse-attention 2s ease-in-out infinite;
+}
+
+.optimization-agent-panel__generate-btn--highlight:hover:not(:disabled) {
+  box-shadow: 0 2px 12px rgba(245, 158, 11, 0.5);
+}
+
+@keyframes pulse-attention {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+
+/* Module mismatch warning */
+.optimization-agent-panel__code-toggle--warning {
+  border-color: rgba(245, 158, 11, 0.5);
+  background: linear-gradient(135deg, rgba(254, 243, 199, 0.8) 0%, rgba(253, 230, 138, 0.6) 100%);
+}
+
+.optimization-agent-panel__mismatch-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 10px;
+  margin-left: auto;
+  margin-right: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.optimization-agent-panel__mismatch-warning {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, rgba(254, 243, 199, 0.9) 0%, rgba(253, 230, 138, 0.8) 100%);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: var(--radius-sm);
+  margin-top: 8px;
+}
+
+.optimization-agent-panel__mismatch-warning svg {
+  color: #d97706;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.optimization-agent-panel__mismatch-warning div {
+  flex: 1;
+}
+
+.optimization-agent-panel__mismatch-warning strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #92400e;
+  margin-bottom: 4px;
+}
+
+.optimization-agent-panel__mismatch-warning p {
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: #78350f;
+  line-height: 1.4;
+}
+
+.optimization-agent-panel__mismatch-warning p:last-child {
+  margin-bottom: 0;
+}
+
+.optimization-agent-panel__mismatch-warning code {
+  background: rgba(120, 53, 15, 0.1);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #92400e;
+}
+
 .optimization-agent-panel__code {
   width: 100%;
   min-height: 150px;

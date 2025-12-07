@@ -56,6 +56,14 @@ export interface StatusResponse {
   latest: StreamStep | null;
 }
 
+export interface EditApplied {
+  edit_type: 'replace' | 'insert_after' | 'delete';
+  line_start: number;
+  line_end: number;
+  new_content: string;
+  original_lines: string[];
+}
+
 export interface StreamStep {
   iteration: number;
   code: string;
@@ -65,6 +73,9 @@ export interface StreamStep {
   sim_passed: boolean;
   error: string | null;
   done: boolean;
+  phase?: string;
+  action?: string;
+  edit_applied?: EditApplied | null;
 }
 
 export interface OptimizeResponse {
