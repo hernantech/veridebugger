@@ -91,6 +91,8 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 .pnpm-debug.log*
 .npm
 .yarn/
@@ -99,6 +101,7 @@ yarn-error.log*
 out/
 build/
 dist/
+dist-ssr/
 *.tsbuildinfo
 .eslintcache
 .parcel-cache/
@@ -111,15 +114,21 @@ dist/
 
 # IDE / Editor
 .idea/
-.vscode/
+.vscode/*
+!.vscode/extensions.json
 *.swp
 *.swo
+*.sw?
 *~
 .project
 .classpath
 .settings/
 *.sublime-workspace
 *.sublime-project
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
 
 # OS
 .DS_Store
