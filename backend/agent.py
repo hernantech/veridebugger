@@ -36,6 +36,9 @@ class AgentState(TypedDict):
     # Testgen fields
     generated_testbench: str | None
     interface_info: dict | None
+    # Improvement 1: Iteration tracking
+    phase_history: list[str]
+    goal: str
 
 
 SYSTEM_PROMPT = """You are an expert FPGA engineer debugging and optimizing Verilog code.
@@ -64,6 +67,57 @@ Example - to add a missing declaration after line 10:
     }
 }
 """
+
+# Error-specific prompts for different error types
+ERROR_PROMPTS = {
+    "syntax": """SYNTAX ERROR DETECTED
+
+The code has syntax errors (missing semicolons, mismatched begin/end, invalid keywords).
+
+Common fixes:
+- Add missing semicolons at end of statements
+- Match every 'begin' with 'end'
+- Check for typos in keywords (assign, wire, reg, etc.)
+- Ensure parentheses and brackets are balanced
+
+Errors:
+{errors}
+
+Fix the syntax errors by providing an edit.""",
+
+    "binding": """BINDING/UNDECLARED ERROR DETECTED
+
+The code references undeclared signals or has binding issues.
+
+Common fixes:
+- Declare missing signals as 'wire' or 'reg'
+- Check signal names for typos
+- Ensure signals are declared before use
+- Verify port connections in module instantiations
+
+Errors:
+{errors}
+
+Fix the binding errors by providing an edit.""",
+
+    "logic": """LOGIC ERROR DETECTED
+
+The simulation is failing - the logic doesn't match expected behavior.
+
+Common issues:
+- Incorrect combinational logic
+- Missing or wrong sequential logic (clock/reset)
+- Off-by-one errors in counters or state machines
+- Wrong bit-width assignments
+
+Test failures:
+{errors}
+
+Raw simulation output:
+{raw}
+
+Analyze the failures and fix the logic error by providing an edit."""
+}
 
 
 def add_line_numbers(code: str) -> str:
@@ -112,18 +166,23 @@ def compile_node(state: AgentState) -> dict:
     result = execute_tool("compile_verilog", {"code": state["design_code"]})
 
     reasoning = list(state["reasoning"])
+    phase_history = list(state.get("phase_history", []))
+    phase_history.append("compile")
+
     if result["success"]:
         reasoning.append("Compilation successful, moving to simulation")
         return {
             "compile_result": result,
             "phase": "simulate",
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "phase_history": phase_history
         }
     else:
         reasoning.append(f"Compilation failed with {len(result['errors'])} errors")
         return {
             "compile_result": result,
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "phase_history": phase_history
         }
 
 
@@ -135,6 +194,8 @@ def simulate_node(state: AgentState) -> dict:
     })
 
     reasoning = list(state["reasoning"])
+    phase_history = list(state.get("phase_history", []))
+    phase_history.append("simulate")
     vcd_path = result.get("vcd_path")
 
     if result["passed"]:
@@ -143,7 +204,8 @@ def simulate_node(state: AgentState) -> dict:
             "sim_result": result,
             "vcd_path": vcd_path,
             "phase": "synthesize",
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "phase_history": phase_history
         }
     else:
         reasoning.append(f"Simulation failed with {len(result.get('failures', []))} failures")
@@ -151,7 +213,8 @@ def simulate_node(state: AgentState) -> dict:
             "sim_result": result,
             "vcd_path": vcd_path,
             "phase": "debug",  # Go to debug phase on failure
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "phase_history": phase_history
         }
 
 
@@ -159,6 +222,8 @@ def synthesize_node(state: AgentState) -> dict:
     result = execute_tool("estimate_resources", {"code": state["design_code"], "target": "generic"})
 
     reasoning = list(state["reasoning"])
+    phase_history = list(state.get("phase_history", []))
+    phase_history.append("synthesize")
     lut_history = list(state["lut_history"])
 
     if result["success"] and result["luts"]:
@@ -168,35 +233,52 @@ def synthesize_node(state: AgentState) -> dict:
             "synth_result": result,
             "lut_history": lut_history,
             "phase": "optimize",
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "phase_history": phase_history
         }
     else:
         reasoning.append(f"Synthesis failed: {result.get('errors', [])}")
         return {
             "synth_result": result,
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "phase_history": phase_history
         }
 
 
 def fix_node(state: AgentState) -> dict:
     iterations = state["iterations"] + 1
     reasoning = list(state["reasoning"])
+    phase_history = list(state.get("phase_history", []))
+    phase_history.append("fix")
 
     if iterations > state["max_iterations"]:
         return {
             "iterations": iterations,
             "phase": "done",
-            "error": "Max iterations reached"
+            "error": "Max iterations reached",
+            "phase_history": phase_history
         }
 
     phase = state["phase"]
     if phase == "compile" and state["compile_result"]:
         errors = state["compile_result"].get("errors", [])
-        context = f"Compilation errors:\n{json.dumps(errors, indent=2)}\n\nFix these errors by providing an edit."
+        # Classify error type from first error
+        error_type = "syntax"
+        if errors and isinstance(errors, list) and len(errors) > 0:
+            first_error = errors[0]
+            if isinstance(first_error, dict):
+                error_type = first_error.get("type", "syntax")
+
+        # Use error-specific prompt
+        if error_type in ERROR_PROMPTS:
+            context = ERROR_PROMPTS[error_type].format(errors=json.dumps(errors, indent=2), raw="")
+        else:
+            context = f"Compilation errors:\n{json.dumps(errors, indent=2)}\n\nFix these errors by providing an edit."
     elif phase == "simulate" and state["sim_result"]:
         failures = state["sim_result"].get("failures", [])
         raw = state["sim_result"].get("raw_output", "")
-        context = f"Simulation failures:\n{json.dumps(failures, indent=2)}\n\nRaw output:\n{raw}\n\nFix the logic errors by providing an edit."
+        # Use logic error prompt
+        context = ERROR_PROMPTS["logic"].format(errors=json.dumps(failures, indent=2), raw=raw[:500])
     elif phase == "optimize":
         context = f"""Current LUT count: {state["synth_result"]["luts"]}
 LUT history: {state["lut_history"]}
@@ -212,7 +294,8 @@ Optimize the design to reduce LUT count while maintaining correctness. Provide a
         return {
             "iterations": iterations,
             "error": response["error"],
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "phase_history": phase_history
         }
 
     reasoning.append(response.get("reasoning", ""))
@@ -233,12 +316,14 @@ Optimize the design to reduce LUT count while maintaining correctness. Provide a
             "iterations": iterations,
             "design_code": edited["edited_code"],
             "phase": new_phase,
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "phase_history": phase_history
         }
 
     return {
         "iterations": iterations,
-        "reasoning": reasoning
+        "reasoning": reasoning,
+        "phase_history": phase_history
     }
 
 
@@ -279,13 +364,16 @@ Respond with JSON:
 def debug_node(state: AgentState) -> dict:
     """Analyze VCD waveform to understand simulation failures."""
     reasoning = list(state["reasoning"])
+    phase_history = list(state.get("phase_history", []))
+    phase_history.append("debug")
     iterations = state["iterations"] + 1
 
     if iterations > state["max_iterations"]:
         return {
             "iterations": iterations,
             "phase": "done",
-            "error": "Max iterations reached during debugging"
+            "error": "Max iterations reached during debugging",
+            "phase_history": phase_history
         }
 
     vcd_path = state.get("vcd_path")
@@ -360,14 +448,16 @@ def debug_node(state: AgentState) -> dict:
             "design_code": edited["edited_code"],
             "debug_trace": causal_chain,
             "phase": "compile",  # Go back to compile to verify fix
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "phase_history": phase_history
         }
 
     return {
         "iterations": iterations,
         "debug_trace": causal_chain,
         "reasoning": reasoning,
-        "phase": "simulate"
+        "phase": "simulate",
+        "phase_history": phase_history
     }
 
 
@@ -379,9 +469,13 @@ def should_continue(state: AgentState) -> Literal["fix", "debug", "compile", "si
         return "end"
 
     phase = state["phase"]
+    goal = state.get("goal", "optimize")
 
     if phase == "compile":
         if state["compile_result"] and state["compile_result"]["success"]:
+            # Goal: compile - stop after successful compilation
+            if goal == "compile":
+                return "end"
             return "simulate"
         elif state["compile_result"]:
             return "fix"
@@ -390,6 +484,9 @@ def should_continue(state: AgentState) -> Literal["fix", "debug", "compile", "si
 
     elif phase == "simulate":
         if state.get("sim_result") and state["sim_result"].get("passed"):
+            # Goal: verify - stop after all tests pass
+            if goal == "verify":
+                return "end"
             return "synthesize"
         elif state.get("sim_result"):
             return "debug"  # Go to debug on failure
@@ -402,7 +499,11 @@ def should_continue(state: AgentState) -> Literal["fix", "debug", "compile", "si
 
     elif phase == "synthesize":
         if state["synth_result"] and state["synth_result"]["success"]:
-            return "fix"
+            # Goal: optimize - continue to optimization
+            if goal == "optimize":
+                return "fix"
+            # Other goals stop after synthesis
+            return "end"
         elif state["synth_result"]:
             return "fix"
         else:
@@ -449,7 +550,7 @@ def build_graph():
     return workflow.compile()
 
 
-async def run_agent(design_code: str, testbench_code: str, max_iterations: int = 10):
+async def run_agent(design_code: str, testbench_code: str, max_iterations: int = 10, goal: str = "optimize"):
     """Run the debugging/optimization agent and yield steps."""
     graph = build_graph()
 
@@ -468,7 +569,9 @@ async def run_agent(design_code: str, testbench_code: str, max_iterations: int =
         "vcd_path": None,
         "debug_trace": None,
         "generated_testbench": None,
-        "interface_info": None
+        "interface_info": None,
+        "phase_history": [],
+        "goal": goal
     }
 
     try:
@@ -497,7 +600,7 @@ async def run_agent(design_code: str, testbench_code: str, max_iterations: int =
         }
 
 
-async def run_agent_streaming(design_code: str, testbench_code: str, max_iterations: int = 10):
+async def run_agent_streaming(design_code: str, testbench_code: str, max_iterations: int = 10, goal: str = "optimize"):
     """Run the agent with streaming updates at each step."""
     graph = build_graph()
 
@@ -516,7 +619,9 @@ async def run_agent_streaming(design_code: str, testbench_code: str, max_iterati
         "vcd_path": None,
         "debug_trace": None,
         "generated_testbench": None,
-        "interface_info": None
+        "interface_info": None,
+        "phase_history": [],
+        "goal": goal
     }
 
     try:
@@ -524,17 +629,29 @@ async def run_agent_streaming(design_code: str, testbench_code: str, max_iterati
             if isinstance(output, dict):
                 for node_name, node_state in output.items():
                     if isinstance(node_state, dict):
+                        # Calculate errors before/after
+                        result = node_state.get("compile_result") or node_state.get("sim_result") or node_state.get("synth_result")
+                        errors_before = 0
+                        errors_after = 0
+
+                        if node_state.get("compile_result"):
+                            errors_after = len(node_state["compile_result"].get("errors", []))
+                        elif node_state.get("sim_result"):
+                            errors_after = len(node_state["sim_result"].get("failures", []))
+
                         # Merge with current state knowledge
                         yield {
                             "phase": node_state.get("phase", "unknown"),
                             "action": node_name,
                             "reasoning": node_state.get("reasoning", [""])[-1] if node_state.get("reasoning") else "",
                             "code": node_state.get("design_code", design_code),
-                            "result": node_state.get("compile_result") or node_state.get("sim_result") or node_state.get("synth_result"),
+                            "result": result,
                             "lut_history": node_state.get("lut_history", []),
                             "iteration": node_state.get("iterations", 0),
                             "vcd_path": node_state.get("vcd_path"),
                             "debug_trace": node_state.get("debug_trace"),
+                            "phase_history": node_state.get("phase_history", []),
+                            "errors_after": errors_after,
                             "done": node_state.get("phase") == "done"
                         }
     except Exception as e:
@@ -546,6 +663,8 @@ async def run_agent_streaming(design_code: str, testbench_code: str, max_iterati
             "result": None,
             "lut_history": [],
             "iteration": 0,
+            "phase_history": [],
+            "errors_after": 0,
             "done": True
         }
 

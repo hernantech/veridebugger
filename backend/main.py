@@ -44,6 +44,7 @@ class OptimizeRequest(BaseModel):
     design_code: str
     testbench_code: str
     max_iterations: int = 10
+    goal: str = "optimize"  # "compile", "verify", or "optimize"
 
 
 class TestGenRequest(BaseModel):
@@ -73,6 +74,7 @@ async def start_optimization(request: OptimizeRequest):
         "design_code": request.design_code,
         "testbench_code": request.testbench_code,
         "max_iterations": request.max_iterations,
+        "goal": request.goal,
         "status": "pending",
         "history": []
     }
@@ -110,7 +112,8 @@ async def stream_optimization(websocket: WebSocket, run_id: str):
         async for step in run_agent_streaming(
             design_code=run["design_code"],
             testbench_code=run["testbench_code"],
-            max_iterations=run["max_iterations"]
+            max_iterations=run["max_iterations"],
+            goal=run.get("goal", "optimize")
         ):
             run["history"].append(step)
             await websocket.send_json(step)
@@ -137,7 +140,8 @@ async def optimize_sync(request: OptimizeRequest):
     async for step in run_agent(
         design_code=request.design_code,
         testbench_code=request.testbench_code,
-        max_iterations=request.max_iterations
+        max_iterations=request.max_iterations,
+        goal=request.goal
     ):
         results.append(step)
         if step["done"]:
@@ -299,6 +303,103 @@ async def check_c_syntax(request: ConvertRequest):
         "success": result.get("success", False),
         "errors": result.get("errors", []),
         "raw_output": result.get("raw_output", "")
+    }
+
+
+class ConvertPipelineRequest(BaseModel):
+    c_code: str
+    top_function: str = "main"
+    testbench_code: str = ""  # Optional testbench, will be generated if empty
+    max_iterations: int = 10
+    goal: str = "verify"  # Default to verify for C conversion
+
+
+@app.post("/convert/pipeline")
+async def convert_and_optimize_pipeline(request: ConvertPipelineRequest):
+    """Full C-to-Verilog pipeline: syntax check, convert, then debug/optimize.
+
+    Steps:
+    1. Check C syntax (fail fast)
+    2. Convert to Verilog via BAMBU
+    3. Generate testbench if not provided
+    4. Run full debug/optimize pipeline
+    """
+    # Step 1: Check C syntax
+    syntax_result = execute_tool("check_c_syntax", {"code": request.c_code})
+    if not syntax_result.get("success"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "step": "syntax_check",
+                "success": False,
+                "errors": syntax_result.get("errors", ["C syntax check failed"]),
+                "raw_output": syntax_result.get("raw_output", "")
+            }
+        )
+
+    # Step 2: Convert to Verilog
+    convert_result = execute_tool("convert_c_to_verilog", {
+        "code": request.c_code,
+        "top_function": request.top_function
+    })
+
+    if not convert_result.get("success"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "step": "conversion",
+                "success": False,
+                "errors": convert_result.get("errors", ["Conversion failed"]),
+                "raw_output": convert_result.get("raw_output", "")
+            }
+        )
+
+    verilog_code = convert_result.get("verilog_code", "")
+
+    # Step 3: Get or generate testbench
+    testbench_code = request.testbench_code
+    if not testbench_code:
+        tb_result = execute_tool("generate_testbench", {
+            "design_code": verilog_code,
+            "use_llm": False  # Use skeleton for C-generated code
+        })
+        if "error" not in tb_result:
+            testbench_code = tb_result.get("testbench_code", "")
+        else:
+            # Return partial result if testbench generation fails
+            return {
+                "step": "testbench_generation",
+                "success": False,
+                "verilog_code": verilog_code,
+                "error": tb_result.get("error"),
+                "message": "Conversion successful but testbench generation failed"
+            }
+
+    # Step 4: Run debug/optimize pipeline
+    results = []
+    async for step in run_agent(
+        design_code=verilog_code,
+        testbench_code=testbench_code,
+        max_iterations=request.max_iterations,
+        goal=request.goal
+    ):
+        results.append(step)
+        if step["done"]:
+            break
+
+    if not results:
+        raise HTTPException(status_code=500, detail="Pipeline produced no results")
+
+    final = results[-1]
+    return {
+        "success": True,
+        "c_code": request.c_code,
+        "verilog_code": final["code"],
+        "testbench_code": testbench_code,
+        "lut_history": final["lut_history"],
+        "iterations": final["iteration"],
+        "reasoning": [r.get("reasoning") for r in results if r.get("reasoning")],
+        "pipeline_steps": ["syntax_check", "conversion", "testbench_gen", "debug_optimize"]
     }
 
 
