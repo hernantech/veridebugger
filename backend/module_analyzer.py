@@ -97,6 +97,9 @@ def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
     # Pattern 3: module name (\n  ports... \n);  (multi-line)
 
     patterns = [
+        # Parameterized module: module name #(params)(ports);
+        # Use [\s\S]*? for params to handle multi-line with comments
+        r'module\s+(\w+)\s*#\s*\([\s\S]*?\)\s*\(([^;]*)\)\s*;',
         # Standard: module name(...);
         r'module\s+(\w+)\s*(?:#\s*\([^)]*\))?\s*\(([^;]*)\)\s*;',
         # Without trailing semicolon after ports (some tools)
@@ -148,28 +151,38 @@ def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
     # input [7:0] data,
     # input data,
     ansi_patterns = [
-        # Full: input wire signed [7:0] name [3:0]
-        r'(input|output|inout)\s+(wire|reg)?\s*(signed)?\s*(?:\[(\d+):(\d+)\])?\s*(\w+)(?:\s*\[(\d+):(\d+)\])?',
-        # Without wire/reg: input [7:0] name
-        r'(input|output|inout)\s+(signed)?\s*\[(\d+):(\d+)\]\s*(\w+)',
-        # Simple: input name
+        # Full: input wire signed [7:0] name [3:0] - also handles parameterized widths
+        # Use [^\]]+ to match any width spec including params like DATA_W-1:0
+        r'(input|output|inout)\s+(?:wire\s+|reg\s+)?(signed\s+)?(?:\[([^\]]+)\]\s*)?(\w+)(?:\s*\[([^\]]+)\])?',
+        # Simple: input name (1-bit, no width specifier)
         r'(input|output|inout)\s+(\w+)\s*(?:,|$|\))',
     ]
 
     port_section = module_match.group(2)
 
+    def parse_width_spec(width_spec: str | None) -> int:
+        """Parse width from spec like '7:0' or 'DATA_W-1:0'. Returns 1 if unparseable."""
+        if not width_spec:
+            return 1
+        # Try to parse numeric width like "7:0"
+        numeric_match = re.match(r'(\d+)\s*:\s*(\d+)', width_spec)
+        if numeric_match:
+            msb, lsb = int(numeric_match.group(1)), int(numeric_match.group(2))
+            return abs(msb - lsb) + 1
+        # For parameterized widths, try to extract a reasonable default
+        # e.g., "DATA_W-1:0" -> we can't know the value, return 8 as default
+        return 8  # Default for parameterized widths
+
     # Try full pattern first
     for match in re.finditer(ansi_patterns[0], port_section):
-        direction, _, signed, msb, lsb, name, arr_msb, arr_lsb = match.groups()
+        direction, signed, width_spec, name, arr_spec = match.groups()
 
-        width = 1
-        if msb and lsb:
-            width = abs(int(msb) - int(lsb)) + 1
+        # Skip if name looks like a keyword (pattern might over-match)
+        if name.lower() in ('wire', 'reg', 'signed', 'integer', 'input', 'output', 'inout'):
+            continue
 
-        is_array = arr_msb is not None
-        array_dims = []
-        if is_array:
-            array_dims = [(int(arr_msb), int(arr_lsb))]
+        width = parse_width_spec(width_spec)
+        is_array = arr_spec is not None
 
         interface.ports.append(Port(
             name=name,
@@ -177,25 +190,13 @@ def extract_module_interface(verilog_code: str) -> ModuleInterface | None:
             width=width,
             is_signed=signed is not None,
             is_array=is_array,
-            array_dims=array_dims
+            array_dims=[]
         ))
 
-    # Try simpler patterns if full pattern didn't find ports
-    if not interface.ports:
-        # Pattern: input [7:0] name (without wire/reg)
-        for match in re.finditer(ansi_patterns[1], port_section):
-            direction, signed, msb, lsb, name = match.groups()
-            width = abs(int(msb) - int(lsb)) + 1
-            interface.ports.append(Port(
-                name=name,
-                direction=direction,
-                width=width,
-                is_signed=signed is not None
-            ))
-
+    # Try simpler pattern if full pattern didn't find ports
     if not interface.ports:
         # Pattern: input name (simple, 1-bit)
-        for match in re.finditer(ansi_patterns[2], port_section):
+        for match in re.finditer(ansi_patterns[1], port_section):
             direction, name = match.groups()
             # Skip if name looks like a keyword
             if name.lower() not in ('wire', 'reg', 'signed', 'integer'):
